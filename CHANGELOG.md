@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.2] - 2026-04-09
+### Changed
+- do_setup(): loginctl enable-linger now runs automatically
+  before service install instead of showing a manual hint
+- enable_linger() added: checks if linger already active,
+  tries direct then sudo, falls back to hint if both fail
+- Linger step shown as [0/3] before service installation
+  so it takes effect before systemd service starts
+- Removed redundant linger hint from systemd fallback block
+
 ## [1.3.1] - 2026-04-09
 ### Fixed
 - detect_aro_user(): root (uid=0) excluded from scan — prevents

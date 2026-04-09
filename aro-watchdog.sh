@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.3.1
+# ARO Node Watchdog Script v1.3.2
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.3.1"
+SCRIPT_VERSION="1.3.2"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -24,7 +24,7 @@ STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.3.1                    ║
+║           ARO Node Watchdog v1.3.2                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -145,7 +145,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.3.1
+# Version: 1.3.2
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -185,7 +185,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.3.1
+# 🚀 ARO Node Watchdog v1.3.2
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -219,6 +219,16 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.3.2] - 2026-04-09
+### Changed
+- do_setup(): loginctl enable-linger now runs automatically
+  before service install instead of showing a manual hint
+- enable_linger() added: checks if linger already active,
+  tries direct then sudo, falls back to hint if both fail
+- Linger step shown as [0/3] before service installation
+  so it takes effect before systemd service starts
+- Removed redundant linger hint from systemd fallback block
 
 ## [1.3.1] - 2026-04-09
 ### Fixed
@@ -321,7 +331,7 @@ EOF
 - Sửa lỗi Regex parsing dữ liệu từ tệp log của ARO.
 - Khắc phục lỗi phạm vi biến (scope) khi sử dụng `flock`.
 - Sửa công thức tính Delta Reward (hỗ trợ số thực).
-- Chống spam thông báo mất kết nối (giới hạn 1 thông báo/giờ).
+- Chống thông báo lỗi mất kết nối (giới hạn 1 thông báo/giờ).
 
 ### Updated
 - Tối ưu lệnh chạy ARO: `DISPLAY=:20 /usr/bin/ARO`.
@@ -1285,7 +1295,47 @@ do_uninstall() {
     echo "Done."
 }
 
+enable_linger() {
+    # Skip if not a systemd system
+    if [ ! -d /run/systemd/system ]; then
+        return 0
+    fi
+
+    local target_user="$EFFECTIVE_USER"
+
+    # Check if linger is already enabled
+    if loginctl show-user "$target_user" 2>/dev/null \
+            | grep -q "Linger=yes"; then
+        echo "✔ Linger already enabled for user: $target_user"
+        return 0
+    fi
+
+    echo "  Enabling systemd linger for user: $target_user..."
+
+    # Try to enable linger directly (works if current user is
+    # root OR if target_user == current user)
+    if loginctl enable-linger "$target_user" 2>/dev/null; then
+        echo "✔ Linger enabled — watchdog service will survive SSH disconnect."
+        return 0
+    fi
+
+    # Try with sudo if available
+    if command -v sudo >/dev/null 2>&1; then
+        if sudo loginctl enable-linger "$target_user" 2>/dev/null; then
+            echo "✔ Linger enabled (via sudo)."
+            return 0
+        fi
+    fi
+
+    # Could not enable — print manual hint
+    echo "⚠ Could not enable linger automatically."
+    echo "  Run this manually to keep watchdog alive after SSH disconnect:"
+    echo "    loginctl enable-linger $target_user"
+}
+
 do_setup() {
+    resolve_effective_user
+
     # Reset stale watchdog state from any previous run
     if [ -f "$STATE_FILE" ]; then
         rm -f "$STATE_FILE" "${STATE_FILE}.lock"
@@ -1301,6 +1351,11 @@ do_setup() {
     fi
 
     echo "=== ARO Watchdog Setup ==="
+    echo ""
+
+    # Enable systemd linger BEFORE installing service
+    echo "[0/3] Enabling systemd linger..."
+    enable_linger
     echo ""
 
     # Step 1: Install as service
@@ -1320,7 +1375,6 @@ do_setup() {
         else
             # Fallback: start as background process if service failed
             echo "⚠ systemd service did not start. Falling back to background mode."
-            echo "  Hint: Run 'loginctl enable-linger $CURRENT_USER' to allow user services."
             if [ -f "$PID_FILE" ]; then
                 local old_pid
                 old_pid=$(cat "$PID_FILE")
@@ -1331,7 +1385,6 @@ do_setup() {
             local new_pid=$!
             echo "$new_pid" > "$PID_FILE"
             echo "✔ Watchdog started in background (PID: $new_pid)."
-            echo "  Note: Will stop if SSH session ends. Run the hint above to fix."
         fi
     else
         # sysvinit / runit: fallback to background
