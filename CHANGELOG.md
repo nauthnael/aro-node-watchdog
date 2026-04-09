@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.3] - 2026-04-09
+### Fixed
+- restart_aro(): replaced "su" with "sudo -u" to launch ARO
+  as EFFECTIVE_USER without requiring a TTY — fixes ARO never
+  starting when watchdog runs as a different user (e.g. root)
+  because "su" is immediately suspended (state T) in
+  non-interactive/no-TTY contexts such as systemd services
+- sudo -n used for non-interactive check before attempting
+  launch; falls back to su if sudo is unavailable or requires
+  a password (non-cloud environments)
+- Confirmed working on Google Cloud
+
 ## [1.3.2] - 2026-04-09
 ### Changed
 - do_setup(): loginctl enable-linger now runs automatically

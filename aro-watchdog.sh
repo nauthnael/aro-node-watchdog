@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.3.2
+# ARO Node Watchdog Script v1.3.3
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.3.2"
+SCRIPT_VERSION="1.3.3"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -24,7 +24,7 @@ STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.3.2                    ║
+║           ARO Node Watchdog v1.3.3                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -145,7 +145,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.3.2
+# Version: 1.3.3
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -185,7 +185,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.3.2
+# 🚀 ARO Node Watchdog v1.3.3
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -219,6 +219,18 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.3.3] - 2026-04-09
+### Fixed
+- restart_aro(): replaced "su" with "sudo -u" to launch ARO
+  as EFFECTIVE_USER without requiring a TTY — fixes ARO never
+  starting when watchdog runs as a different user (e.g. root)
+  because "su" is immediately suspended (state T) in
+  non-interactive/no-TTY contexts such as systemd services
+- sudo -n used for non-interactive check before attempting
+  launch; falls back to su if sudo is unavailable or requires
+  a password (non-cloud environments)
+- Confirmed working on Google Cloud
 
 ## [1.3.2] - 2026-04-09
 ### Changed
@@ -945,11 +957,25 @@ restart_aro() {
     fi
     
     if [ "$EFFECTIVE_USER" != "$CURRENT_USER" ]; then
-        # Launch as a different user using su
-        su -s /bin/bash "$EFFECTIVE_USER" -c \
-            "DISPLAY=:20 XAUTHORITY=\"$EFFECTIVE_HOME/.Xauthority\" \
-             LIBGL_ALWAYS_SOFTWARE=1 \"$ARO_BINARY\"" \
-            >/dev/null 2>&1 &
+        # Prefer sudo -u (no TTY required, works on cloud VPS
+        # with NOPASSWD sudo: GCloud, AWS, Oracle, etc.)
+        if command -v sudo >/dev/null 2>&1 && \
+           sudo -n -u "$EFFECTIVE_USER" true 2>/dev/null; then
+            sudo -u "$EFFECTIVE_USER" \
+                DISPLAY=":20" \
+                XAUTHORITY="$EFFECTIVE_HOME/.Xauthority" \
+                LIBGL_ALWAYS_SOFTWARE="1" \
+                "$ARO_BINARY" >/dev/null 2>&1 &
+            log "ARO launched via sudo -u $EFFECTIVE_USER" "INFO"
+        else
+            # Fallback: su (requires TTY/password — may fail
+            # in non-interactive mode)
+            log "sudo not available or requires password, trying su..." "WARN"
+            su -s /bin/bash "$EFFECTIVE_USER" -c \
+                "DISPLAY=:20 XAUTHORITY=\"$EFFECTIVE_HOME/.Xauthority\" \
+                 LIBGL_ALWAYS_SOFTWARE=1 \"$ARO_BINARY\"" \
+                >/dev/null 2>&1 &
+        fi
     else
         DISPLAY=":20" XAUTHORITY="$EFFECTIVE_HOME/.Xauthority" \
         LIBGL_ALWAYS_SOFTWARE="1" "$ARO_BINARY" >/dev/null 2>&1 &
