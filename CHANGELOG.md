@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.3.5] - 2026-04-09
+### Fixed
+- verify_startup(): file existence check now uses
+  run_as_aro_user test -f instead of direct [ -f ],
+  fixing false "failed" when log file is owned by
+  a different user than the watchdog process
+- get_disconnect_duration(): same fix for file check
+- parse_node_info(): same fix for file check
+
+### Added
+- _maybe_reexec_as_root(): auto privilege escalation —
+  if current user is not root and sudo NOPASSWD is
+  available (Google Cloud, AWS, Oracle VPS), the script
+  transparently re-execs itself via "sudo bash" with all
+  original arguments preserved. This allows the curl
+  one-liner to work without manually running sudo -i.
+  Falls back to a warning message if sudo requires a
+  password. Skipped for: log, start-foreground, version,
+  readme commands which do not need root access.
+
 ## [1.3.4] - 2026-04-09
 ### Fixed
 - All ARO log file operations (ls, tail, stat) now use

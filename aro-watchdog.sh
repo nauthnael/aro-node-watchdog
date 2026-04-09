@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.3.4
+# ARO Node Watchdog Script v1.3.5
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.3.4"
+SCRIPT_VERSION="1.3.5"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -21,10 +21,63 @@ CONFIG_FILE="$SCRIPT_DIR/aro-watchdog.conf"
 PID_FILE="/tmp/aro_watchdog_${CURRENT_USER}.pid"
 STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 
+# ─────────────────────────────────────────────────────────────
+# AUTO PRIVILEGE ESCALATION
+# ─────────────────────────────────────────────────────────────
+# Re-exec as root if not already root and sudo is available.
+# This allows the curl one-liner to work without "sudo -i".
+# Only applies to commands that benefit from root access.
+# Commands excluded: log, start-foreground (run as service user)
+_maybe_reexec_as_root() {
+    # Already root — nothing to do
+    if [ "$CURRENT_USER" = "root" ]; then
+        return 0
+    fi
+
+    # Parse command from args to decide if escalation is needed
+    local _cmd=""
+    for _arg in "$@"; do
+        case "$_arg" in
+            --token|--chatid) continue ;;
+            -*) continue ;;
+            *)
+                if [ -z "$_cmd" ]; then
+                    _cmd="$_arg"
+                fi
+                ;;
+        esac
+    done
+
+    # These commands do not need root
+    case "$_cmd" in
+        log|start-foreground|version|readme|"")
+            return 0
+            ;;
+    esac
+
+    # Try to re-exec as root via sudo -n (non-interactive)
+    if command -v sudo >/dev/null 2>&1 && \
+       sudo -n true 2>/dev/null; then
+        exec sudo bash "$0" "$@"
+        # exec replaces current process — code below never runs
+        # unless exec fails (extremely unlikely)
+        exit $?
+    fi
+
+    # sudo requires password — warn but continue
+    echo "⚠ Running as non-root user: $CURRENT_USER"
+    echo "  Some features may not work correctly."
+    echo "  For best results run: sudo bash $0 $*"
+    echo ""
+}
+
+# Call immediately after definition, passing all original args
+_maybe_reexec_as_root "$@"
+
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.3.4                    ║
+║           ARO Node Watchdog v1.3.5                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -145,7 +198,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.3.4
+# Version: 1.3.5
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -185,7 +238,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.3.4
+# 🚀 ARO Node Watchdog v1.3.5
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -219,6 +272,26 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.3.5] - 2026-04-09
+### Fixed
+- verify_startup(): file existence check now uses
+  run_as_aro_user test -f instead of direct [ -f ],
+  fixing false "failed" when log file is owned by
+  a different user than the watchdog process
+- get_disconnect_duration(): same fix for file check
+- parse_node_info(): same fix for file check
+
+### Added
+- _maybe_reexec_as_root(): auto privilege escalation —
+  if current user is not root and sudo NOPASSWD is
+  available (Google Cloud, AWS, Oracle VPS), the script
+  transparently re-execs itself via "sudo bash" with all
+  original arguments preserved. This allows the curl
+  one-liner to work without manually running sudo -i.
+  Falls back to a warning message if sudo requires a
+  password. Skipped for: log, start-foreground, version,
+  readme commands which do not need root access.
 
 ## [1.3.4] - 2026-04-09
 ### Fixed
@@ -972,7 +1045,8 @@ verify_startup() {
         local candidate=$(get_latest_aro_log)
         [ -n "$candidate" ] && LATEST_LOG_FILE="$candidate"
 
-        if [ -f "$LATEST_LOG_FILE" ]; then
+        if run_as_aro_user test -f "$LATEST_LOG_FILE" \
+                2>/dev/null; then
             local lines
             lines=$(run_as_aro_user tail -n 50 "$LATEST_LOG_FILE" \
                     2>/dev/null)
