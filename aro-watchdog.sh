@@ -1,10 +1,11 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.1.1
+# ARO Node Watchdog Script v1.1.2
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
+SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
 HOME_DIR="$HOME"
@@ -23,10 +24,10 @@ STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.1.1                    ║
+║           ARO Node Watchdog v1.1.2                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
-║  🐦 Connect with the author: https://x.com/tuangg     ║
+║  Bird Connect: https://x.com/tuangg                   ║
 ╚═══════════════════════════════════════════════════════╝
 EOF
 }
@@ -38,6 +39,94 @@ show_footer() {
  for updates, tips and new scripts: https://x.com/tuangg
 ─────────────────────────────────────────────────────────
 EOF
+}
+
+# Trap for footer
+trap '[ "$SHOW_FOOTER_ON_EXIT" = "1" ] && show_footer' EXIT
+
+validate_telegram_credentials() {
+    local token_invalid=0
+    local chatid_invalid=0
+    local token_reason=""
+    local chatid_reason=""
+    
+    local placeholders=("TOKEN_CUA_BAN" "YOUR_TOKEN" "BOT_TOKEN" "YOUR_BOT_TOKEN" "ID_CUA_BAN" "YOUR_CHAT_ID" "CHATID" "YOUR_ID" "TOKEN" "CHAT_ID")
+    
+    if [ -n "$CLI_TOKEN" ]; then
+        local t_upper=$(echo "$CLI_TOKEN" | tr '[:lower:]' '[:upper:]')
+        for p in "${placeholders[@]}"; do
+            if [ "$t_upper" = "$p" ]; then
+                token_invalid=1
+                token_reason="looks like a placeholder"
+                break
+            fi
+        done
+        if [ "$token_invalid" -eq 0 ] && [[ ! "$CLI_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+            token_invalid=1
+            token_reason="invalid format (expected format: 123456789:ABCdef...)"
+        fi
+    fi
+    
+    if [ -n "$CLI_CHATID" ]; then
+        local c_upper=$(echo "$CLI_CHATID" | tr '[:lower:]' '[:upper:]')
+        for p in "${placeholders[@]}"; do
+            if [ "$c_upper" = "$p" ]; then
+                chatid_invalid=1
+                chatid_reason="looks like a placeholder"
+                break
+            fi
+        done
+        if [ "$chatid_invalid" -eq 0 ] && [[ ! "$CLI_CHATID" =~ ^-?[0-9]+$ ]]; then
+            chatid_invalid=1
+            chatid_reason="invalid format (expected: numeric ID like 123456789 or -100123456789)"
+        fi
+    fi
+    
+    if [ "$token_invalid" -eq 1 ] || [ "$chatid_invalid" -eq 1 ]; then
+        if [ "$token_invalid" -eq 1 ]; then
+            echo ""
+            echo "  ⚠️  WARNING: Telegram Bot Token appears invalid"
+            echo "      Value:  \"$CLI_TOKEN\""
+            echo "      Reason: $token_reason"
+        fi
+        if [ "$chatid_invalid" -eq 1 ]; then
+            echo ""
+            echo "  ⚠️  WARNING: Telegram Chat ID appears invalid"
+            echo "      Value:  \"$CLI_CHATID\""
+            echo "      Reason: $chatid_reason"
+        fi
+        
+        local choice="Y"
+        if [ -t 0 ]; then
+            echo ""
+            echo "  ┌─────────────────────────────────────────────────┐"
+            echo "  │  Do you want to skip Telegram setup for now?    │"
+            echo "  │  You can configure it later by editing:         │"
+            echo "  │  $CONFIG_FILE                                   │"
+            echo "  │                                                 │"
+            echo "  │  [Y] Skip — continue without valid credentials  │"
+            echo "  │  [N] Exit — let me fix the token/chatid first   │"
+            echo "  └─────────────────────────────────────────────────┘"
+            printf "  Your choice [Y/n]: "
+            read choice
+            choice=${choice:-Y}
+        else
+            echo ""
+            echo "  → Non-interactive mode detected. Automatically skipping invalid credentials."
+        fi
+        
+        if [[ "$choice" =~ ^[Yy]$ ]]; then
+            echo "  → Skipped. Edit config later: nano $CONFIG_FILE"
+            echo "  → Then run: ./aro-watchdog.sh test-notify  to verify"
+            CLI_TOKEN=""
+            CLI_CHATID=""
+        else
+            echo "  → Exiting. Get your token from @BotFather on Telegram."
+            echo "  → Re-run: ./aro-watchdog.sh init --token YOUR_TOKEN --chatid YOUR_CHAT_ID"
+            SHOW_FOOTER_ON_EXIT=0
+            exit 1
+        fi
+    fi
 }
 
 create_default_config() {
@@ -56,7 +145,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.1.1
+# Version: 1.1.2
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -89,7 +178,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.1.1
+# 🚀 ARO Node Watchdog v1.1.2
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -119,6 +208,13 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.1.2] - 2026-04-09
+### Fixed
+- Banner now shown only once at script start; footer only on clean exit via trap, never on error paths
+- Added validate_telegram_credentials() to detect placeholder and malformed --token / --chatid values before saving to config
+- Interactive prompt allows user to skip invalid credentials and configure later; auto-skips in non-interactive mode
+- Invalid credentials are never written to config file
 
 ## [1.1.1] - 2026-04-09
 ### Fixed
@@ -161,6 +257,8 @@ CMD=""
 CLI_TOKEN=""
 CLI_CHATID=""
 
+# Create a local copy of arguments to parse
+args=("$@")
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --token)
@@ -172,7 +270,6 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -*)
-            echo "Unknown option: $1"
             shift
             ;;
         *)
@@ -184,18 +281,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Show Banner once at start
+if [[ -n "$CMD" && ! "$CMD" =~ ^(log|start-foreground)$ ]]; then
+    show_banner
+fi
+
+# Validation for init
+if [[ "$CMD" = "init" && ( -n "$CLI_TOKEN" || -n "$CLI_CHATID" ) ]]; then
+    validate_telegram_credentials
+fi
+
 # STEP 3: Handle commands without config
 if [[ "$CMD" =~ ^(init|version|readme)$ ]]; then
-    show_banner
     if [ "$CMD" = "init" ]; then
         create_default_config
-        show_footer
     elif [ "$CMD" = "version" ]; then
         echo "ARO Watchdog v${SCRIPT_VERSION}"
-        show_footer
     elif [ "$CMD" = "readme" ]; then
         [ -f "$SCRIPT_DIR/README.md" ] && cat "$SCRIPT_DIR/README.md"
     fi
+    SHOW_FOOTER_ON_EXIT=1
     exit 0
 fi
 
@@ -223,17 +328,12 @@ if [ -n "$CLI_CHATID" ]; then
     TG_CHAT_ID="$CLI_CHATID"
 fi
 
-# STEP 8: Validate TG_BOT_TOKEN and TG_CHAT_ID
+# STEP 8: Validate TG_BOT_TOKEN and TG_CHAT_ID (skipped for some commands)
 if [[ ! "$CMD" =~ ^(stop|status|log|config|uninstall)$ ]]; then
     if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
         echo "FATAL: TG_BOT_TOKEN and TG_CHAT_ID must be set in $CONFIG_FILE"
         exit 1
     fi
-fi
-
-# Show banner for the rest (unless hidden)
-if [[ -n "$CMD" && ! "$CMD" =~ ^(start-foreground|log)$ ]]; then
-    show_banner
 fi
 
 # Global Stats Variables
@@ -519,7 +619,7 @@ parse_node_info() {
     UPTIME="0"
     PUBLIC_IP="N/A"
 
-    if [ ! -f "$LATEST_LOG_FILE" ]; then return; fi
+    if [ ! -f "$LATEST_LOG_FILE" ]; then return; f
     local lines=$(tail -n 200 "$LATEST_LOG_FILE" 2>/dev/null)
     if [ -z "$lines" ]; then return; fi
     
@@ -688,7 +788,7 @@ do_start() {
         local pid=$(cat "$PID_FILE")
         if kill -0 "$pid" 2>/dev/null; then
             echo "Watchdog already running (PID: $pid)"
-            show_footer
+            SHOW_FOOTER_ON_EXIT=1
             exit 0
         else
             rm -f "$PID_FILE"
@@ -700,7 +800,6 @@ do_start() {
     local new_pid=$!
     echo $new_pid > "$PID_FILE"
     echo "Watchdog started (PID: $new_pid)"
-    show_footer
 }
 
 do_stop() {
@@ -712,7 +811,6 @@ do_stop() {
     else
         echo "Watchdog is not running."
     fi
-    show_footer
 }
 
 do_status() {
@@ -748,7 +846,6 @@ do_status() {
     echo "Uptime Ratio   : $(format_uptime "$UPTIME")%"
     echo "Reward Today   : $(format_number "$REWARD_TODAY")"
     echo "Reward Yest.   : $(format_number "$REWARD_YESTERDAY")"
-    show_footer
 }
 
 do_install() {
@@ -862,7 +959,6 @@ EOF
             echo "To install manually, create $init_file with LSB headers and start-stop-daemon, then run: update-rc.d aro-watchdog defaults."
         fi
     fi
-    show_footer
 }
 
 do_uninstall() {
@@ -875,21 +971,60 @@ do_uninstall() {
         echo "Uninstall for runit/sysvinit must be done manually."
     fi
     do_stop
-    echo "Uninstall complete."
+    echo "Done."
 }
 
+# Main routing logic
 case "$CMD" in
-    start)       do_start ;;
-    stop)        do_stop ;;
-    restart)     do_stop; sleep 2; do_start ;;
-    status)      do_status ;;
-    install)     do_install ;;
-    uninstall)   do_uninstall ;;
-    log)         tail -f "$WATCHDOG_LOG" ;;
-    test-notify) LATEST_LOG_FILE=$(get_latest_aro_log); parse_node_info; send_notify_restart_success 0; echo "Sent"; show_footer ;;
-    report)      LATEST_LOG_FILE=$(get_latest_aro_log); send_daily_report; echo "Sent"; show_footer ;;
-    config)      ${EDITOR:-nano} "$CONFIG_FILE" ;;
-    start-foreground) watchdog_loop ;;
+    start)
+        do_start
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
+    stop)
+        do_stop
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
+    restart)
+        do_stop
+        sleep 2
+        do_start
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
+    status)
+        do_status
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
+    install)
+        do_install
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
+    uninstall)
+        do_uninstall
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
+    log)
+        tail -f "$WATCHDOG_LOG"
+        ;;
+    test-notify)
+        LATEST_LOG_FILE=$(get_latest_aro_log)
+        parse_node_info
+        send_notify_restart_success 0
+        echo "Sent."
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
+    report)
+        LATEST_LOG_FILE=$(get_latest_aro_log)
+        send_daily_report
+        echo "Sent."
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
+    config)
+        ${EDITOR:-nano} "$CONFIG_FILE"
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
+    start-foreground)
+        watchdog_loop
+        ;;
     *)
         echo "Usage: $0 {init|start|stop|restart|status|install|uninstall|log|test-notify|report|config|start-foreground|readme|version} [--token TOKEN] [--chatid ID]"
         exit 1
