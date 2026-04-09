@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.2.2
+# ARO Node Watchdog Script v1.3.0
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.2.2"
+SCRIPT_VERSION="1.3.0"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -24,7 +24,7 @@ STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.2.2                    ║
+║           ARO Node Watchdog v1.3.0                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -145,7 +145,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.2.2
+# Version: 1.3.0
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -169,6 +169,12 @@ DAILY_REPORT_HOUR=7
 
 # === ARO Binary ===
 ARO_BINARY="/usr/bin/ARO"
+
+# === ARO Run User ===
+# The Linux user account that runs the ARO node.
+# Leave empty to auto-detect (recommended).
+# Do NOT set this to root — ARO must run as a normal user.
+ARO_RUN_USER=""
 EOF
 
     if [ -n "$CLI_TOKEN" ]; then
@@ -179,7 +185,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.2.2
+# 🚀 ARO Node Watchdog v1.3.0
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -213,6 +219,28 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.3.0] - 2026-04-09
+### Fixed
+- All ARO process operations (pgrep, pkill, launch) now use
+  EFFECTIVE_USER instead of CURRENT_USER — fixes false crash
+  detection when watchdog runs as root but ARO runs as another user
+- ARO launch in restart_aro() uses correct user via "su" when
+  EFFECTIVE_USER differs from CURRENT_USER
+- EFFECTIVE_HOME used for ARO log dir and Xauthority paths
+- Max retry sleep reduced from 1 hour to 12 minutes; retry
+  counter resets after sleep so watchdog resumes automatically
+
+### Added
+- detect_aro_user(): auto-detects ARO user by scanning all home
+  directories for ARO log folder; falls back to CRD process detection
+- resolve_effective_user(): validates ARO_RUN_USER (blocks root,
+  checks user exists), resolves EFFECTIVE_USER and EFFECTIVE_HOME,
+  updates ARO_LOG_DIR and ARO_DATA_DIR to correct paths
+- ARO_RUN_USER config key: leave empty for auto-detect, or set
+  manually if auto-detection finds multiple users
+- Auto-persists detected user into config file on first run
+- Clear error messages when user is root, missing, or ambiguous
 
 ## [1.2.2] - 2026-04-09
 ### Fixed
@@ -393,6 +421,9 @@ UPTIME="0"
 PUBLIC_IP="N/A"
 LATEST_LOG_FILE=""
 
+EFFECTIVE_USER="$CURRENT_USER"
+EFFECTIVE_HOME="$HOME"
+
 # State Variables
 retry_count=0
 last_crash_epoch=0
@@ -401,6 +432,125 @@ restart_count_24h=0
 last_stable_epoch=$(date +%s)
 last_disconnect_alert_epoch=0
 last_daily_report_date=""
+
+# Detect which Linux user is running ARO node
+detect_aro_user() {
+    local found_users=()
+    local aro_log_subpath=".local/share/com.aro.ARONetwork/logs"
+
+    # Scan all users: check /home/* and /root
+    local all_homes=()
+    while IFS=: read -r uname _ uid _ _ uhome _; do
+        # Only consider users with uid >= 1000 (normal users) or root
+        if [ "$uid" -ge 1000 ] 2>/dev/null || [ "$uname" = "root" ]; then
+            all_homes+=("$uname:$uhome")
+        fi
+    done < /etc/passwd
+
+    for entry in "${all_homes[@]}"; do
+        local uname="${entry%%:*}"
+        local uhome="${entry#*:}"
+        if [ -d "$uhome/$aro_log_subpath" ]; then
+            found_users+=("$uname")
+        fi
+    done
+
+    local count=${#found_users[@]}
+
+    if [ "$count" -eq 1 ]; then
+        # Exactly one user found — use it
+        local detected="${found_users[0]}"
+        log "Auto-detected ARO user: $detected (found ARO log directory)" "INFO"
+        # Persist to config so future runs skip detection
+        if [ -f "$CONFIG_FILE" ]; then
+            sed -i "s|^ARO_RUN_USER=\"\"|ARO_RUN_USER=\"${detected}\"|" \
+                "$CONFIG_FILE" 2>/dev/null
+        fi
+        echo "$detected"
+        return 0
+
+    elif [ "$count" -eq 0 ]; then
+        # Fallback: try detecting via Chrome Remote Desktop process
+        local crd_user
+        crd_user=$(ps aux 2>/dev/null \
+            | grep -i "chrome-remote-desktop\|Xvfb\|Xtightvnc" \
+            | grep -v grep \
+            | grep -v root \
+            | awk '{print $1}' \
+            | sort -u \
+            | head -1)
+
+        if [ -n "$crd_user" ] && [ "$crd_user" != "root" ]; then
+            log "Detected ARO user via CRD process: $crd_user" "INFO"
+            if [ -f "$CONFIG_FILE" ]; then
+                sed -i "s|^ARO_RUN_USER=\"\"|ARO_RUN_USER=\"${crd_user}\"|" \
+                    "$CONFIG_FILE" 2>/dev/null
+            fi
+            echo "$crd_user"
+            return 0
+        fi
+
+        # Cannot detect
+        echo ""
+        return 1
+
+    else
+        # Multiple users found — cannot auto-select
+        echo ""
+        return 2
+    fi
+}
+
+# Resolve EFFECTIVE_USER and EFFECTIVE_HOME, update ARO path variables
+resolve_effective_user() {
+    # If ARO_RUN_USER not set in config, auto-detect
+    if [ -z "$ARO_RUN_USER" ]; then
+        local detected
+        local detect_rc
+        detected=$(detect_aro_user)
+        detect_rc=$?
+
+        if [ "$detect_rc" -eq 0 ] && [ -n "$detected" ]; then
+            ARO_RUN_USER="$detected"
+        elif [ "$detect_rc" -eq 2 ]; then
+            echo "ERROR: Multiple users have ARO installed."
+            echo "  Please set ARO_RUN_USER manually in: $CONFIG_FILE"
+            echo "  Example: ARO_RUN_USER=\"adam\""
+            exit 1
+        else
+            echo "ERROR: Cannot detect which user runs ARO."
+            echo "  Please set ARO_RUN_USER manually in: $CONFIG_FILE"
+            echo "  Example: ARO_RUN_USER=\"adam\""
+            exit 1
+        fi
+    fi
+
+    # Validate: must not be root
+    if [ "$ARO_RUN_USER" = "root" ]; then
+        echo "ERROR: ARO_RUN_USER is set to 'root'."
+        echo "  ARO node should not run as root."
+        echo "  Set the correct username in: $CONFIG_FILE"
+        echo "  Example: ARO_RUN_USER=\"adam\""
+        exit 1
+    fi
+
+    # Validate: user must exist
+    if ! id "$ARO_RUN_USER" >/dev/null 2>&1; then
+        echo "ERROR: ARO_RUN_USER=\"$ARO_RUN_USER\" does not exist on this system."
+        echo "  Check the username in: $CONFIG_FILE"
+        exit 1
+    fi
+
+    # Resolve home directory
+    EFFECTIVE_USER="$ARO_RUN_USER"
+    EFFECTIVE_HOME=$(eval echo "~$EFFECTIVE_USER")
+
+    # Update path variables to use effective user's home
+    ARO_LOG_DIR="$EFFECTIVE_HOME/.local/share/com.aro.ARONetwork/logs"
+    ARO_DATA_DIR="$EFFECTIVE_HOME/.local/share/com.aro.ARONetwork"
+
+    log "Running watchdog for user: $EFFECTIVE_USER (home: $EFFECTIVE_HOME)" "INFO"
+}
 
 # ─────────────────────────────────────────────────────────────
 # LOGGING
@@ -646,7 +796,7 @@ get_latest_aro_log() {
 }
 
 check_aro_health() {
-    local pid=$(pgrep -u "$CURRENT_USER" -x ARO | head -1)
+    local pid=$(pgrep -u "$EFFECTIVE_USER" -x ARO | head -1)
     if [ -z "$pid" ]; then
         echo "dead"
         return
@@ -748,9 +898,9 @@ verify_startup() {
 }
 
 restart_aro() {
-    pkill -u "$CURRENT_USER" -x ARO 2>/dev/null
+    pkill -u "$EFFECTIVE_USER" -x ARO 2>/dev/null
     sleep 3
-    pkill -9 -u "$CURRENT_USER" -x ARO 2>/dev/null
+    pkill -9 -u "$EFFECTIVE_USER" -x ARO 2>/dev/null
     sleep 2
     
     if [ ! -f "$ARO_BINARY" ]; then
@@ -759,8 +909,16 @@ restart_aro() {
         return
     fi
     
-    DISPLAY=":20" XAUTHORITY="$HOME/.Xauthority" \
-    LIBGL_ALWAYS_SOFTWARE="1" "$ARO_BINARY" >/dev/null 2>&1 &
+    if [ "$EFFECTIVE_USER" != "$CURRENT_USER" ]; then
+        # Launch as a different user using su
+        su -s /bin/bash "$EFFECTIVE_USER" -c \
+            "DISPLAY=:20 XAUTHORITY=\"$EFFECTIVE_HOME/.Xauthority\" \
+             LIBGL_ALWAYS_SOFTWARE=1 \"$ARO_BINARY\"" \
+            >/dev/null 2>&1 &
+    else
+        DISPLAY=":20" XAUTHORITY="$EFFECTIVE_HOME/.Xauthority" \
+        LIBGL_ALWAYS_SOFTWARE="1" "$ARO_BINARY" >/dev/null 2>&1 &
+    fi
     
     # Do NOT sleep here — verify_startup() will poll and detect new log
     verify_startup
@@ -771,6 +929,7 @@ restart_aro() {
 # ─────────────────────────────────────────────────────────────
 watchdog_loop() {
     load_state
+    resolve_effective_user
     LATEST_LOG_FILE=$(get_latest_aro_log)
     last_daily_report_date=""
 
@@ -824,8 +983,11 @@ watchdog_loop() {
         
         if [ "$retry_count" -ge "$MAX_RETRIES" ]; then
             send_notify_restart_failed
-            log "Max retries reached. Watchdog sleeping 1 hour before checking again." "WARN"
-            sleep 3600
+            log "Max retries reached. Sleeping 12 minutes before resuming..." "WARN"
+            sleep 720
+            retry_count=0
+            save_state
+            log "Retry counter reset. Resuming health checks." "INFO"
             continue
         fi
 
@@ -917,6 +1079,8 @@ do_stop() {
 }
 
 do_status() {
+    resolve_effective_user
+    
     local w_status="Stopped"
     local w_pid="N/A"
 
@@ -947,7 +1111,7 @@ do_status() {
     fi
 
     local a_pid
-    a_pid=$(pgrep -u "$CURRENT_USER" -x ARO | head -1)
+    a_pid=$(pgrep -u "$EFFECTIVE_USER" -x ARO | head -1)
     local a_status="Stopped"
     [ -n "$a_pid" ] && a_status="Running" || a_pid="N/A"
 
@@ -1195,6 +1359,7 @@ case "$CMD" in
         tail -f "$WATCHDOG_LOG"
         ;;
     test-notify)
+        resolve_effective_user
         LATEST_LOG_FILE=$(get_latest_aro_log)
         parse_node_info
         send_notify_restart_success 0
@@ -1202,6 +1367,7 @@ case "$CMD" in
         SHOW_FOOTER_ON_EXIT=1
         ;;
     report)
+        resolve_effective_user
         LATEST_LOG_FILE=$(get_latest_aro_log)
         send_daily_report
         echo "Sent."

@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.3.0] - 2026-04-09
+### Fixed
+- All ARO process operations (pgrep, pkill, launch) now use
+  EFFECTIVE_USER instead of CURRENT_USER — fixes false crash
+  detection when watchdog runs as root but ARO runs as another user
+- ARO launch in restart_aro() uses correct user via "su" when
+  EFFECTIVE_USER differs from CURRENT_USER
+- EFFECTIVE_HOME used for ARO log dir and Xauthority paths
+- Max retry sleep reduced from 1 hour to 12 minutes; retry
+  counter resets after sleep so watchdog resumes automatically
+
+### Added
+- detect_aro_user(): auto-detects ARO user by scanning all home
+  directories for ARO log folder; falls back to CRD process detection
+- resolve_effective_user(): validates ARO_RUN_USER (blocks root,
+  checks user exists), resolves EFFECTIVE_USER and EFFECTIVE_HOME,
+  updates ARO_LOG_DIR and ARO_DATA_DIR to correct paths
+- ARO_RUN_USER config key: leave empty for auto-detect, or set
+  manually if auto-detection finds multiple users
+- Auto-persists detected user into config file on first run
+- Clear error messages when user is root, missing, or ambiguous
+
 ## [1.2.2] - 2026-04-09
 ### Fixed
 - do_stop(): now waits up to 10s for graceful SIGTERM shutdown,
