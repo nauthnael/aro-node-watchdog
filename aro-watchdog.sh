@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.2.1
+# ARO Node Watchdog Script v1.2.2
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.2.1"
+SCRIPT_VERSION="1.2.2"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -24,7 +24,7 @@ STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.2.1                    ║
+║           ARO Node Watchdog v1.2.2                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -145,7 +145,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.2.1
+# Version: 1.2.2
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -156,7 +156,7 @@ TG_CHAT_ID=""
 CHECK_INTERVAL=30
 LOG_STALE_MINUTES=10
 DISCONNECT_ALERT_MINUTES=15
-STARTUP_TIMEOUT=90
+STARTUP_TIMEOUT=120
 RESET_STABLE_HOURS=2
 
 # === Restart Policy ===
@@ -179,7 +179,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.2.1
+# 🚀 ARO Node Watchdog v1.2.2
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -213,6 +213,23 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.2.2] - 2026-04-09
+### Fixed
+- do_stop(): now waits up to 10s for graceful SIGTERM shutdown,
+  then sends SIGKILL if process is still alive — prevents terminal
+  from freezing when watchdog is mid-restart
+- do_status(): now detects watchdog running as systemd user service
+  even when no PID_FILE exists; shows "Running (systemd)" with PID
+- Default STARTUP_TIMEOUT increased from 90s to 120s to allow ARO
+  more time to reach connected state on slow networks
+
+### Added
+- get_aro_log_snippet(): extracts last N lines from ARO log with
+  HTML entity escaping for safe Telegram delivery
+- send_notify_crash(): now includes last 5 ARO log lines in
+  Telegram message for immediate crash debugging without SSH
+- send_notify_restart_failed(): same ARO log snippet added
 
 ## [1.2.1] - 2026-04-09
 ### Fixed
@@ -485,6 +502,26 @@ send_telegram() {
         -d text="$msg" >/dev/null 2>&1 || log "Telegram notification failed." "WARN"
 }
 
+# Get last N lines of ARO log as a plain string for notifications
+get_aro_log_snippet() {
+    local lines="${1:-5}"
+    if [ -f "$LATEST_LOG_FILE" ]; then
+        local snippet
+        snippet=$(tail -n "$lines" "$LATEST_LOG_FILE" 2>/dev/null \
+                  | grep -oP '\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\] \[(?:INFO|WARN|ERROR)\] .*' \
+                  | sed 's/\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] \([0-9:]*\)\.[0-9]*\]/[\1]/g' \
+                  | tail -n "$lines")
+        if [ -z "$snippet" ]; then
+            # Fallback: just return raw last lines if grep finds nothing
+            snippet=$(tail -n "$lines" "$LATEST_LOG_FILE" 2>/dev/null)
+        fi
+        snippet=$(echo "$snippet" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+        echo "$snippet"
+    else
+        echo "(ARO log not available)"
+    fi
+}
+
 # ─────────────────────────────────────────────────────────────
 # NOTIFICATION TEMPLATES
 # ─────────────────────────────────────────────────────────────
@@ -492,15 +529,21 @@ send_notify_crash() {
     local reason="$1"
     local retry_num="$2"
     local max_retries="$3"
-    local datetime=$(date "+%Y-%m-%d %H:%M:%S")
-    
+    local datetime
+    datetime=$(date "+%Y-%m-%d %H:%M:%S")
+    local snippet
+    snippet=$(get_aro_log_snippet 5)
+
     local msg="🔴 <b>[ARO CRASH] ${HOSTNAME}</b>
 ──────────────────────
 🖥️ VPS: ${HOSTNAME}
 👤 User: ${CURRENT_USER}
 ⏰ Time: ${datetime}
 📋 Reason: ${reason}
-🔄 Retry: ${retry_num}/${max_retries}"
+🔄 Retry: ${retry_num}/${max_retries}
+──────────────────────
+📄 Last ARO log:
+<code>${snippet}</code>"
     
     send_telegram "$msg"
 }
@@ -529,13 +572,19 @@ send_notify_restart_success() {
 }
 
 send_notify_restart_failed() {
+    local snippet
+    snippet=$(get_aro_log_snippet 5)
+
     local msg="❌ <b>[ARO FAILED] ${HOSTNAME}</b>
 ──────────────────────
 🖥️ VPS: ${HOSTNAME}
 👤 User: ${CURRENT_USER}
 ⚠️ Failed after ${MAX_RETRIES} attempts
 🛑 Watchdog stopped retrying
-👉 Manual intervention required!"
+👉 Manual intervention required!
+──────────────────────
+📄 Last ARO log:
+<code>${snippet}</code>"
 
     send_telegram "$msg"
 }
@@ -840,10 +889,28 @@ do_start() {
 
 do_stop() {
     if [ -f "$PID_FILE" ]; then
-        local pid=$(cat "$PID_FILE")
-        kill "$pid" 2>/dev/null
+        local pid
+        pid=$(cat "$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "Stopping watchdog (PID: $pid)..."
+            kill "$pid" 2>/dev/null
+            # Wait up to 10 seconds for graceful shutdown
+            local waited=0
+            while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 10 ]; do
+                sleep 1
+                waited=$((waited + 1))
+            done
+            # Force kill if still alive
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "Force killing watchdog (PID: $pid)..."
+                kill -9 "$pid" 2>/dev/null
+                sleep 1
+            fi
+            echo "Watchdog stopped (PID: $pid)."
+        else
+            echo "Watchdog process not found (stale PID: $pid)."
+        fi
         rm -f "$PID_FILE"
-        echo "Watchdog stopped (PID: $pid)."
     else
         echo "Watchdog is not running."
     fi
@@ -852,36 +919,55 @@ do_stop() {
 do_status() {
     local w_status="Stopped"
     local w_pid="N/A"
+
+    # Check PID file first
     if [ -f "$PID_FILE" ]; then
         w_pid=$(cat "$PID_FILE")
         if kill -0 "$w_pid" 2>/dev/null; then
-            w_status="Running"
+            w_status="Running (background)"
         else
             w_status="Stale PID"
+            w_pid="N/A"
         fi
     fi
-    
-    local a_pid=$(pgrep -u "$CURRENT_USER" -x ARO | head -1)
+
+    # Also check systemd user service (may override above)
+    if [ -d /run/systemd/system ]; then
+        if systemctl --user is-active --quiet aro-watchdog 2>/dev/null; then
+            local svc_pid
+            svc_pid=$(systemctl --user show aro-watchdog \
+                      --property=MainPID --value 2>/dev/null)
+            if [ -n "$svc_pid" ] && [ "$svc_pid" != "0" ]; then
+                w_status="Running (systemd)"
+                w_pid="$svc_pid"
+            else
+                w_status="Running (systemd)"
+            fi
+        fi
+    fi
+
+    local a_pid
+    a_pid=$(pgrep -u "$CURRENT_USER" -x ARO | head -1)
     local a_status="Stopped"
     [ -n "$a_pid" ] && a_status="Running" || a_pid="N/A"
-    
+
     LATEST_LOG_FILE=$(get_latest_aro_log)
     local log_path=${LATEST_LOG_FILE:-"None"}
-    
+
     echo "=== Watchdog Status ==="
-    echo "Watchdog: $w_status (PID: $w_pid)"
-    echo "ARO Node: $a_status (PID: $a_pid)"
+    echo "Watchdog : $w_status (PID: $w_pid)"
+    echo "ARO Node : $a_status (PID: $a_pid)"
     echo "Latest Log: $log_path"
     echo ""
     echo "=== ARO Node Info ==="
     parse_node_info
     echo "Serial Number   : $SERIAL"
-    echo "Email Acc      : $EMAIL"
-    echo "Connect Status : $CONNECT_STATUS"
-    echo "Public IP      : $PUBLIC_IP"
-    echo "Uptime Ratio   : $(format_uptime "$UPTIME")%"
-    echo "Reward Today   : $(format_number "$REWARD_TODAY")"
-    echo "Reward Yest.   : $(format_number "$REWARD_YESTERDAY")"
+    echo "Email Acc       : $EMAIL"
+    echo "Connect Status  : $CONNECT_STATUS"
+    echo "Public IP       : $PUBLIC_IP"
+    echo "Uptime Ratio    : $(format_uptime "$UPTIME")%"
+    echo "Reward Today    : $(format_number "$REWARD_TODAY")"
+    echo "Reward Yest.    : $(format_number "$REWARD_YESTERDAY")"
 }
 
 do_install() {

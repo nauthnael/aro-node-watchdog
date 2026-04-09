@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.2] - 2026-04-09
+### Fixed
+- do_stop(): now waits up to 10s for graceful SIGTERM shutdown,
+  then sends SIGKILL if process is still alive — prevents terminal
+  from freezing when watchdog is mid-restart
+- do_status(): now detects watchdog running as systemd user service
+  even when no PID_FILE exists; shows "Running (systemd)" with PID
+- Default STARTUP_TIMEOUT increased from 90s to 120s to allow ARO
+  more time to reach connected state on slow networks
+
+### Added
+- get_aro_log_snippet(): extracts last N lines from ARO log with
+  HTML entity escaping for safe Telegram delivery
+- send_notify_crash(): now includes last 5 ARO log lines in
+  Telegram message for immediate crash debugging without SSH
+- send_notify_restart_failed(): same ARO log snippet added
+
 ## [1.2.1] - 2026-04-09
 ### Fixed
 - parse_node_info(): syntax error "f" instead of "fi" caused crash
