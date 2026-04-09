@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.3.5
+# ARO Node Watchdog Script v1.3.6
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.3.5"
+SCRIPT_VERSION="1.3.6"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -72,7 +72,7 @@ _require_root "$@"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.3.5                    ║
+║           ARO Node Watchdog v1.3.6                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -193,7 +193,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.3.5
+# Version: 1.3.6
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -233,7 +233,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.3.5
+# 🚀 ARO Node Watchdog v1.3.6
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -267,6 +267,25 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.3.6] - 2026-04-10
+### Fixed
+- All systemctl --user calls now run via systemctl_user()
+  helper which executes as EFFECTIVE_USER with correct
+  XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS — fixes
+  "Failed to connect to bus: No medium found" when script
+  runs as root managing another user's systemd service
+- do_install(): service unit file now written to
+  EFFECTIVE_HOME instead of HOME — fixes service being
+  installed in /root/.config instead of the ARO user's
+  home directory when running as root
+- do_uninstall(): service file removal now uses
+  EFFECTIVE_HOME for the same reason
+
+### Added
+- systemctl_user(): helper function that transparently
+  wraps systemctl --user with correct user context and
+  D-Bus environment variables
 
 ## [1.3.5] - 2026-04-09
 ### Added
@@ -1028,7 +1047,8 @@ verify_startup() {
         local candidate=$(get_latest_aro_log)
         [ -n "$candidate" ] && LATEST_LOG_FILE="$candidate"
 
-        if [ -f "$LATEST_LOG_FILE" ]; then
+        if run_as_aro_user test -f "$LATEST_LOG_FILE" \
+                2>/dev/null; then
             local lines
             lines=$(run_as_aro_user tail -n 50 "$LATEST_LOG_FILE" \
                     2>/dev/null)
@@ -1259,9 +1279,9 @@ do_status() {
 
     # Also check systemd user service (may override above)
     if [ -d /run/systemd/system ]; then
-        if systemctl --user is-active --quiet aro-watchdog 2>/dev/null; then
+        if systemctl_user is-active --quiet aro-watchdog 2>/dev/null; then
             local svc_pid
-            svc_pid=$(systemctl --user show aro-watchdog \
+            svc_pid=$(systemctl_user show aro-watchdog \
                       --property=MainPID --value 2>/dev/null)
             if [ -n "$svc_pid" ] && [ "$svc_pid" != "0" ]; then
                 w_status="Running (systemd)"
@@ -1296,6 +1316,33 @@ do_status() {
     echo "Reward Yest.    : $(format_number "$REWARD_YESTERDAY")"
 }
 
+# Run "systemctl --user" as EFFECTIVE_USER with correct D-Bus env
+systemctl_user() {
+    local effective_uid
+    effective_uid=$(id -u "$EFFECTIVE_USER" 2>/dev/null)
+
+    if [ -z "$effective_uid" ]; then
+        # Cannot resolve UID — try directly
+        systemctl --user "$@"
+        return $?
+    fi
+
+    local xdg_runtime="/run/user/${effective_uid}"
+
+    if [ "$CURRENT_USER" = "$EFFECTIVE_USER" ]; then
+        # Same user — just set XDG_RUNTIME_DIR if missing
+        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$xdg_runtime}" \
+            systemctl --user "$@"
+    else
+        # Different user (e.g. root running for ubuntu) —
+        # must run as EFFECTIVE_USER with correct environment
+        sudo -u "$EFFECTIVE_USER" \
+            XDG_RUNTIME_DIR="$xdg_runtime" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=${xdg_runtime}/bus" \
+            systemctl --user "$@"
+    fi
+}
+
 do_install() {
     local is_systemd=0
     local is_runit=0
@@ -1307,7 +1354,7 @@ do_install() {
     fi
     
     if [ "$is_systemd" -eq 1 ]; then
-        local unit_dir="$HOME/.config/systemd/user"
+        local unit_dir="$EFFECTIVE_HOME/.config/systemd/user"
         mkdir -p "$unit_dir"
         local svc_file="$unit_dir/aro-watchdog.service"
         cat > "$svc_file" <<EOF
@@ -1325,8 +1372,8 @@ Environment="DISPLAY=:20"
 [Install]
 WantedBy=default.target
 EOF
-        systemctl --user daemon-reload || true
-        systemctl --user enable --now aro-watchdog || true
+        systemctl_user daemon-reload || true
+        systemctl_user enable --now aro-watchdog || true
         echo "Installed as systemd user service."
     
     elif [ "$is_runit" -eq 1 ]; then
@@ -1410,10 +1457,10 @@ EOF
 }
 
 do_uninstall() {
-    if systemctl --user list-unit-files | grep -q 'aro-watchdog.service'; then
-        systemctl --user disable --now aro-watchdog || true
-        rm -f "$HOME/.config/systemd/user/aro-watchdog.service"
-        systemctl --user daemon-reload || true
+    if systemctl_user list-unit-files | grep -q 'aro-watchdog.service'; then
+        systemctl_user disable --now aro-watchdog || true
+        rm -f "$EFFECTIVE_HOME/.config/systemd/user/aro-watchdog.service"
+        systemctl_user daemon-reload || true
         echo "systemd service uninstalled."
     else
         echo "Uninstall for runit/sysvinit must be done manually."
@@ -1466,7 +1513,7 @@ do_setup() {
     # Uninstall any existing watchdog installation first
     local already_installed=0
     if [ -d /run/systemd/system ]; then
-        if systemctl --user list-unit-files 2>/dev/null \
+        if systemctl_user list-unit-files 2>/dev/null \
                 | grep -q 'aro-watchdog.service'; then
             already_installed=1
         fi
@@ -1519,11 +1566,11 @@ do_setup() {
     # Step 2: Ensure service is actually running
     echo "[2/3] Starting watchdog service..."
 
-    # For systemd: use systemctl --user
+    # For systemd: use systemctl_user
     if [ -d /run/systemd/system ]; then
-        systemctl --user start aro-watchdog 2>/dev/null || true
+        systemctl_user start aro-watchdog 2>/dev/null || true
         sleep 2
-        if systemctl --user is-active --quiet aro-watchdog 2>/dev/null; then
+        if systemctl_user is-active --quiet aro-watchdog 2>/dev/null; then
             echo "✔ Watchdog service is running (systemd)."
         else
             # Fallback: start as background process if service failed

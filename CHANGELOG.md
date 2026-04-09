@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.3.6] - 2026-04-10
+### Fixed
+- All systemctl --user calls now run via systemctl_user()
+  helper which executes as EFFECTIVE_USER with correct
+  XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS — fixes
+  "Failed to connect to bus: No medium found" when script
+  runs as root managing another user's systemd service
+- do_install(): service unit file now written to
+  EFFECTIVE_HOME instead of HOME — fixes service being
+  installed in /root/.config instead of the ARO user's
+  home directory when running as root
+- do_uninstall(): service file removal now uses
+  EFFECTIVE_HOME for the same reason
+
+### Added
+- systemctl_user(): helper function that transparently
+  wraps systemctl --user with correct user context and
+  D-Bus environment variables
+
 ## [1.3.5] - 2026-04-09
 ### Added
 - Hard root requirement: script now exits immediately with
