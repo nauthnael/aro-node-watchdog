@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.1.2
+# ARO Node Watchdog Script v1.2.0
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.2.0"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -24,7 +24,7 @@ STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.1.2                    ║
+║           ARO Node Watchdog v1.2.0                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -145,7 +145,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.1.2
+# Version: 1.2.0
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -161,7 +161,8 @@ RESET_STABLE_HOURS=2
 
 # === Restart Policy ===
 MAX_RETRIES=5
-BACKOFF_TIMES="30 60 120 300 600"
+# Backoff delay in seconds per retry (space-separated, one per retry slot)
+BACKOFF_TIMES="0 0 30 60 120"
 
 # === Daily Report ===
 DAILY_REPORT_HOUR=7
@@ -178,7 +179,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.1.2
+# 🚀 ARO Node Watchdog v1.2.0
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -187,8 +188,11 @@ Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho *
 Sao chép và dán dòng lệnh bên dưới vào terminal của bạn (thay `TOKEN` và `ID` bằng thông tin của bạn):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nauthnael/aro-node-watchdog/main/aro-watchdog.sh -o aro-watchdog.sh && chmod +x aro-watchdog.sh && ./aro-watchdog.sh init --token "TOKEN_CUA_BAN" --chatid "ID_CUA_BAN" && ./aro-watchdog.sh install && ./aro-watchdog.sh start
+curl -fsSL https://raw.githubusercontent.com/nauthnael/aro-node-watchdog/main/aro-watchdog.sh -o aro-watchdog.sh && chmod +x aro-watchdog.sh && ./aro-watchdog.sh init --token "TOKEN_CUA_BAN" --chatid "ID_CUA_BAN" && ./aro-watchdog.sh setup
 ```
+
+> **Note:** Nếu bạn dùng Ubuntu/Debian có systemd, hãy chạy lệnh này một lần để service watchdog tiếp tục chạy sau khi thoát SSH:
+> `loginctl enable-linger $(whoami)`
 
 ## 🛠 Tính năng
 - **Fix lỗi treo (Hung detection):** Tự động phát hiện khi log không cập nhật sau 10 phút.
@@ -197,6 +201,7 @@ curl -fsSL https://raw.githubusercontent.com/nauthnael/aro-node-watchdog/main/ar
 - **Quản lý Service:** Hỗ trợ cài đặt như một service hệ thống (Systemd/SysVinit).
 
 ## 💻 Các lệnh quan trọng
+- `./aro-watchdog.sh setup`: Cài đặt service + Chạy + Kiểm tra log (Nên dùng).
 - `./aro-watchdog.sh status`: Kiểm tra tình trạng node.
 - `./aro-watchdog.sh report`: Gửi báo cáo Reward ngay lập tức qua Telegram.
 - `./aro-watchdog.sh log`: Theo dõi hoạt động của watchdog.
@@ -208,6 +213,22 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.2.0] - 2026-04-09
+### Fixed
+- verify_startup() now re-detects the newest ARO log file on every poll iteration, fixing false "restart failed" when ARO creates a new timestamped log file after relaunch
+- restart_aro() no longer does a fixed sleep before verify; detection is now dynamic and starts immediately
+- LIBGL_ALWAYS_SOFTWARE and XAUTHORITY env vars restored in restart_aro() launch command
+
+### Changed
+- Default BACKOFF_TIMES changed from "30 60 120 300 600" to "0 0 30 60 120" — first two restart attempts are now immediate
+- Backoff sleep is skipped entirely when value is 0 (no log noise)
+
+### Added
+- New command "setup": installs service + starts it + shows live log confirmation in one step
+- setup command falls back to background mode with linger hint if systemd user service fails to start
+- README one-liner updated to use "setup" instead of "install && start"
+- loginctl enable-linger note added to README
 
 ## [1.1.2] - 2026-04-09
 ### Fixed
@@ -248,8 +269,7 @@ EOF
     echo "✔ CHANGELOG.md created: $SCRIPT_DIR/CHANGELOG.md"
     echo "→ Next steps:"
     echo "  1. Edit config if needed: nano $CONFIG_FILE"
-    echo "  2. Install service: ./aro-watchdog.sh install"
-    echo "  3. Start watchdog:  ./aro-watchdog.sh start"
+    echo "  2. Run setup: ./aro-watchdog.sh setup"
 }
 
 # STEP 2: Parse CLI flags
@@ -649,11 +669,14 @@ parse_node_info() {
 verify_startup() {
     local i=0
     while [ $((i * 3)) -lt "$STARTUP_TIMEOUT" ]; do
+        # Re-detect newest log file on every iteration
+        local candidate=$(get_latest_aro_log)
+        [ -n "$candidate" ] && LATEST_LOG_FILE="$candidate"
+
         if [ -f "$LATEST_LOG_FILE" ]; then
             local lines=$(tail -n 50 "$LATEST_LOG_FILE" 2>/dev/null)
             local has_info=$(echo "$lines" | grep -c "initial node info resolved")
             local has_conn=$(echo "$lines" | grep -c '"connect":"connected"')
-            
             if [ "$has_info" -gt 0 ] && [ "$has_conn" -gt 0 ]; then
                 echo "success"
                 return
@@ -677,11 +700,10 @@ restart_aro() {
         return
     fi
     
-    DISPLAY=:20 "$ARO_BINARY" >/dev/null 2>&1 &
+    DISPLAY=":20" XAUTHORITY="$HOME/.Xauthority" \
+    LIBGL_ALWAYS_SOFTWARE="1" "$ARO_BINARY" >/dev/null 2>&1 &
     
-    sleep 5
-    LATEST_LOG_FILE=$(get_latest_aro_log)
-    
+    # Do NOT sleep here — verify_startup() will poll and detect new log
     verify_startup
 }
 
@@ -760,8 +782,12 @@ watchdog_loop() {
         save_state
 
         send_notify_crash "$reason" "$retry_count" "$MAX_RETRIES"
-        log "Waiting ${backoff}s before restart attempt ${retry_count}..."
-        sleep "$backoff"
+        if [ "$backoff" -gt 0 ]; then
+            log "Waiting ${backoff}s before restart attempt ${retry_count}..."
+            sleep "$backoff"
+        else
+            log "Restarting immediately (attempt ${retry_count})..."
+        fi
 
         local start_epoch=$(date +%s)
         local result=$(restart_aro)
@@ -974,8 +1000,66 @@ do_uninstall() {
     echo "Done."
 }
 
+do_setup() {
+    echo "=== ARO Watchdog Setup ==="
+    echo ""
+
+    # Step 1: Install as service
+    echo "[1/3] Installing watchdog as system service..."
+    do_install
+    echo ""
+
+    # Step 2: Ensure service is actually running
+    echo "[2/3] Starting watchdog service..."
+
+    # For systemd: use systemctl --user
+    if [ -d /run/systemd/system ]; then
+        systemctl --user start aro-watchdog 2>/dev/null || true
+        sleep 2
+        if systemctl --user is-active --quiet aro-watchdog 2>/dev/null; then
+            echo "✔ Watchdog service is running (systemd)."
+        else
+            # Fallback: start as background process if service failed
+            echo "⚠ systemd service did not start. Falling back to background mode."
+            echo "  Hint: Run 'loginctl enable-linger $CURRENT_USER' to allow user services."
+            watchdog_loop &
+            local new_pid=$!
+            echo $new_pid > "$PID_FILE"
+            echo "✔ Watchdog started in background (PID: $new_pid)."
+            echo "  Note: Will stop if SSH session ends. Run the hint above to fix."
+        fi
+    else
+        # sysvinit / runit: fallback to background
+        watchdog_loop &
+        local new_pid=$!
+        echo $new_pid > "$PID_FILE"
+        echo "✔ Watchdog started in background (PID: $new_pid)."
+    fi
+    echo ""
+
+    # Step 3: Show last 15 lines of watchdog log to confirm activity
+    echo "[3/3] Recent watchdog activity:"
+    echo "──────────────────────────────────────────────"
+    if [ -f "$WATCHDOG_LOG" ]; then
+        tail -n 15 "$WATCHDOG_LOG"
+    else
+        echo "(No log yet — watchdog just started)"
+    fi
+    echo "──────────────────────────────────────────────"
+    echo ""
+    echo "✔ Setup complete! Use './aro-watchdog.sh status' to check node info."
+    echo "  Live log: ./aro-watchdog.sh log"
+}
+
 # Main routing logic
 case "$CMD" in
+    init)
+        # STEP 3 logic already handled CLI version/readme
+        ;;
+    setup)
+        do_setup
+        SHOW_FOOTER_ON_EXIT=1
+        ;;
     start)
         do_start
         SHOW_FOOTER_ON_EXIT=1
@@ -1026,7 +1110,7 @@ case "$CMD" in
         watchdog_loop
         ;;
     *)
-        echo "Usage: $0 {init|start|stop|restart|status|install|uninstall|log|test-notify|report|config|start-foreground|readme|version} [--token TOKEN] [--chatid ID]"
+        echo "Usage: $0 {init|setup|start|stop|restart|status|install|uninstall|log|test-notify|report|config|start-foreground|readme|version} [--token TOKEN] [--chatid ID]"
         exit 1
         ;;
 esac
