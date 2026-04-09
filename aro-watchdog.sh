@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.3.0
+# ARO Node Watchdog Script v1.3.1
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.3.1"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -24,7 +24,7 @@ STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.3.0                    ║
+║           ARO Node Watchdog v1.3.1                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -145,7 +145,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.3.0
+# Version: 1.3.1
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -185,7 +185,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.3.0
+# 🚀 ARO Node Watchdog v1.3.1
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -219,6 +219,23 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.3.1] - 2026-04-09
+### Fixed
+- detect_aro_user(): root (uid=0) excluded from scan — prevents
+  confusing "ARO should not run as root" error when only /root
+  home directory has ARO data folder
+- detect_aro_user() and resolve_effective_user() moved to after
+  log() definition to ensure log() is always available when called
+- resolve_effective_user(): added idempotency guard
+  (EFFECTIVE_USER_RESOLVED flag) — prevents duplicate log entries
+  when called from multiple CLI commands
+- do_setup(): now clears STATE_FILE and stale PID_FILE at start,
+  ensuring watchdog always begins with a clean slate after reinstall
+- Telegram notifications now show EFFECTIVE_USER (actual ARO user)
+  instead of CURRENT_USER (script runner) in all message templates
+- do_setup(): added 4-second delay before tailing watchdog log so
+  new log entries are visible instead of stale history
 
 ## [1.3.0] - 2026-04-09
 ### Fixed
@@ -423,6 +440,7 @@ LATEST_LOG_FILE=""
 
 EFFECTIVE_USER="$CURRENT_USER"
 EFFECTIVE_HOME="$HOME"
+EFFECTIVE_USER_RESOLVED=0
 
 # State Variables
 retry_count=0
@@ -433,6 +451,35 @@ last_stable_epoch=$(date +%s)
 last_disconnect_alert_epoch=0
 last_daily_report_date=""
 
+# ─────────────────────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────────────────────
+log() {
+    local level="${2:-INFO}"
+    local msg="$1"
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    local log_line="[$timestamp] [$level] $msg"
+    
+    if [ -t 1 ]; then
+        if [ "$level" = "ERROR" ] || [ "$level" = "FATAL" ]; then
+            echo "$log_line" >&2
+        else
+            echo "$log_line"
+        fi
+    fi
+    
+    if [ -f "$WATCHDOG_LOG" ]; then
+        local size=$(wc -c < "$WATCHDOG_LOG" 2>/dev/null || stat -c%s "$WATCHDOG_LOG" 2>/dev/null || echo 0)
+        if [ "$size" -gt 5242880 ]; then
+            mv -f "${WATCHDOG_LOG}.2" "${WATCHDOG_LOG}.3" 2>/dev/null
+            mv -f "${WATCHDOG_LOG}.1" "${WATCHDOG_LOG}.2" 2>/dev/null
+            mv -f "${WATCHDOG_LOG}" "${WATCHDOG_LOG}.1" 2>/dev/null
+        fi
+    fi
+    
+    echo "$log_line" >> "$WATCHDOG_LOG"
+}
+
 # Detect which Linux user is running ARO node
 detect_aro_user() {
     local found_users=()
@@ -441,8 +488,8 @@ detect_aro_user() {
     # Scan all users: check /home/* and /root
     local all_homes=()
     while IFS=: read -r uname _ uid _ _ uhome _; do
-        # Only consider users with uid >= 1000 (normal users) or root
-        if [ "$uid" -ge 1000 ] 2>/dev/null || [ "$uname" = "root" ]; then
+        # Only consider users with uid >= 1000 (normal users)
+        if [ "$uid" -ge 1000 ] 2>/dev/null; then
             all_homes+=("$uname:$uhome")
         fi
     done < /etc/passwd
@@ -503,6 +550,11 @@ detect_aro_user() {
 
 # Resolve EFFECTIVE_USER and EFFECTIVE_HOME, update ARO path variables
 resolve_effective_user() {
+    # Idempotency guard — only resolve once per process
+    if [ "$EFFECTIVE_USER_RESOLVED" = "1" ]; then
+        return 0
+    fi
+
     # If ARO_RUN_USER not set in config, auto-detect
     if [ -z "$ARO_RUN_USER" ]; then
         local detected
@@ -550,35 +602,7 @@ resolve_effective_user() {
     ARO_DATA_DIR="$EFFECTIVE_HOME/.local/share/com.aro.ARONetwork"
 
     log "Running watchdog for user: $EFFECTIVE_USER (home: $EFFECTIVE_HOME)" "INFO"
-}
-
-# ─────────────────────────────────────────────────────────────
-# LOGGING
-# ─────────────────────────────────────────────────────────────
-log() {
-    local level="${2:-INFO}"
-    local msg="$1"
-    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    local log_line="[$timestamp] [$level] $msg"
-    
-    if [ -t 1 ]; then
-        if [ "$level" = "ERROR" ] || [ "$level" = "FATAL" ]; then
-            echo "$log_line" >&2
-        else
-            echo "$log_line"
-        fi
-    fi
-    
-    if [ -f "$WATCHDOG_LOG" ]; then
-        local size=$(wc -c < "$WATCHDOG_LOG" 2>/dev/null || stat -c%s "$WATCHDOG_LOG" 2>/dev/null || echo 0)
-        if [ "$size" -gt 5242880 ]; then
-            mv -f "${WATCHDOG_LOG}.2" "${WATCHDOG_LOG}.3" 2>/dev/null
-            mv -f "${WATCHDOG_LOG}.1" "${WATCHDOG_LOG}.2" 2>/dev/null
-            mv -f "${WATCHDOG_LOG}" "${WATCHDOG_LOG}.1" 2>/dev/null
-        fi
-    fi
-    
-    echo "$log_line" >> "$WATCHDOG_LOG"
+    EFFECTIVE_USER_RESOLVED=1
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -687,7 +711,7 @@ send_notify_crash() {
     local msg="🔴 <b>[ARO CRASH] ${HOSTNAME}</b>
 ──────────────────────
 🖥️ VPS: ${HOSTNAME}
-👤 User: ${CURRENT_USER}
+👤 ARO User: ${EFFECTIVE_USER}
 ⏰ Time: ${datetime}
 📋 Reason: ${reason}
 🔄 Retry: ${retry_num}/${max_retries}
@@ -709,7 +733,7 @@ send_notify_restart_success() {
     local msg="✅ <b>[ARO RESTARTED] ${HOSTNAME}</b>
 ──────────────────────
 🖥️ VPS: ${HOSTNAME}
-👤 User: ${CURRENT_USER}
+👤 ARO User: ${EFFECTIVE_USER}
 🔢 Serial: ${SERIAL}
 📧 Account: ${EMAIL}
 🌐 IP: ${PUBLIC_IP}
@@ -728,7 +752,7 @@ send_notify_restart_failed() {
     local msg="❌ <b>[ARO FAILED] ${HOSTNAME}</b>
 ──────────────────────
 🖥️ VPS: ${HOSTNAME}
-👤 User: ${CURRENT_USER}
+👤 ARO User: ${EFFECTIVE_USER}
 ⚠️ Failed after ${MAX_RETRIES} attempts
 🛑 Watchdog stopped retrying
 👉 Manual intervention required!
@@ -744,6 +768,7 @@ send_notify_disconnect_alert() {
     local msg="⚠️ <b>[ARO DISCONNECTED] ${HOSTNAME}</b>
 ──────────────────────
 🖥️ VPS: ${HOSTNAME}
+👤 ARO User: ${EFFECTIVE_USER}
 🔌 Node disconnected for ${minutes} min
 🔢 Serial: ${SERIAL}
 💡 Process still running — may be network issue
@@ -1261,6 +1286,20 @@ do_uninstall() {
 }
 
 do_setup() {
+    # Reset stale watchdog state from any previous run
+    if [ -f "$STATE_FILE" ]; then
+        rm -f "$STATE_FILE" "${STATE_FILE}.lock"
+        echo "✔ Previous watchdog state cleared."
+    fi
+
+    if [ -f "$PID_FILE" ]; then
+        local stale_pid
+        stale_pid=$(cat "$PID_FILE")
+        if ! kill -0 "$stale_pid" 2>/dev/null; then
+            rm -f "$PID_FILE"
+        fi
+    fi
+
     echo "=== ARO Watchdog Setup ==="
     echo ""
 
@@ -1311,6 +1350,8 @@ do_setup() {
 
     # Step 3: Show last 15 lines of watchdog log to confirm activity
     echo "[3/3] Recent watchdog activity:"
+    echo "  (waiting 4s for watchdog to initialize...)"
+    sleep 4
     echo "──────────────────────────────────────────────"
     if [ -f "$WATCHDOG_LOG" ]; then
         tail -n 15 "$WATCHDOG_LOG"

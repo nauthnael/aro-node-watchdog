@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.3.1] - 2026-04-09
+### Fixed
+- detect_aro_user(): root (uid=0) excluded from scan — prevents
+  confusing "ARO should not run as root" error when only /root
+  home directory has ARO data folder
+- detect_aro_user() and resolve_effective_user() moved to after
+  log() definition to ensure log() is always available when called
+- resolve_effective_user(): added idempotency guard
+  (EFFECTIVE_USER_RESOLVED flag) — prevents duplicate log entries
+  when called from multiple CLI commands
+- do_setup(): now clears STATE_FILE and stale PID_FILE at start,
+  ensuring watchdog always begins with a clean slate after reinstall
+- Telegram notifications now show EFFECTIVE_USER (actual ARO user)
+  instead of CURRENT_USER (script runner) in all message templates
+- do_setup(): added 4-second delay before tailing watchdog log so
+  new log entries are visible instead of stale history
+
 ## [1.3.0] - 2026-04-09
 ### Fixed
 - All ARO process operations (pgrep, pkill, launch) now use
@@ -84,7 +101,7 @@
 - Sửa lỗi Regex parsing dữ liệu từ tệp log của ARO.
 - Khắc phục lỗi phạm vi biến (scope) khi sử dụng `flock`.
 - Sửa công thức tính Delta Reward (hỗ trợ số thực).
-- Chống spam thông báo mất kết nối (giới hạn 1 thông báo/giờ).
+- Chống thông báo lỗi mất kết nối (giới hạn 1 thông báo/giờ).
 
 ### Updated
 - Tối ưu lệnh chạy ARO: `DISPLAY=:20 /usr/bin/ARO`.
