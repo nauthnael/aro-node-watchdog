@@ -1,4 +1,4 @@
-# 🚀 ARO Node Watchdog v1.1.0
+# 🚀 ARO Node Watchdog v1.2.1
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -7,8 +7,11 @@ Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho *
 Sao chép và dán dòng lệnh bên dưới vào terminal của bạn (thay `TOKEN` và `ID` bằng thông tin của bạn):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nauthnael/aro-node-watchdog/main/aro-watchdog.sh -o aro-watchdog.sh && chmod +x aro-watchdog.sh && ./aro-watchdog.sh init --token "TOKEN_CUA_BAN" --chatid "ID_CUA_BAN" && ./aro-watchdog.sh install && ./aro-watchdog.sh start
+curl -fsSL https://raw.githubusercontent.com/nauthnael/aro-node-watchdog/main/aro-watchdog.sh -o aro-watchdog.sh && chmod +x aro-watchdog.sh && ./aro-watchdog.sh init --token "TOKEN_CUA_BAN" --chatid "ID_CUA_BAN" && ./aro-watchdog.sh setup
 ```
+
+> **Note:** Nếu bạn dùng Ubuntu/Debian có systemd, hãy chạy lệnh này một lần để service watchdog tiếp tục chạy sau khi thoát SSH:
+> `loginctl enable-linger $(whoami)`
 
 ## 🛠 Tính năng
 - **Fix lỗi treo (Hung detection):** Tự động phát hiện khi log không cập nhật sau 10 phút.
@@ -17,6 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/nauthnael/aro-node-watchdog/main/ar
 - **Quản lý Service:** Hỗ trợ cài đặt như một service hệ thống (Systemd/SysVinit).
 
 ## 💻 Các lệnh quan trọng
+- `./aro-watchdog.sh setup`: Cài đặt service + Chạy + Kiểm tra log (Nên dùng).
 - `./aro-watchdog.sh status`: Kiểm tra tình trạng node.
 - `./aro-watchdog.sh report`: Gửi báo cáo Reward ngay lập tức qua Telegram.
 - `./aro-watchdog.sh log`: Theo dõi hoạt động của watchdog.
@@ -24,4 +28,3 @@ curl -fsSL https://raw.githubusercontent.com/nauthnael/aro-node-watchdog/main/ar
 ---
 **GitHub:** [nauthnael/aro-node-watchdog](https://github.com/nauthnael/aro-node-watchdog)  
 **Author:** [tuangg](https://x.com/tuangg)
-**Connect:** [X.com/tuangg](https://x.com/tuangg)

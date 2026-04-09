@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.2.0
+# ARO Node Watchdog Script v1.2.1
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.1"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -24,7 +24,7 @@ STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.2.0                    ║
+║           ARO Node Watchdog v1.2.1                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -145,7 +145,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.2.0
+# Version: 1.2.1
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -179,7 +179,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.2.0
+# 🚀 ARO Node Watchdog v1.2.1
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -213,6 +213,16 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.2.1] - 2026-04-09
+### Fixed
+- parse_node_info(): syntax error "f" instead of "fi" caused crash
+  when called without a log file present (affects status, test-notify,
+  report, and every restart success notification)
+- Removed dead "init)" block from CLI case statement — init is fully
+  handled before case and never reaches it
+- do_setup() fallback: kill existing watchdog before starting new
+  background instance to prevent duplicate watchdog processes
 
 ## [1.2.0] - 2026-04-09
 ### Fixed
@@ -639,7 +649,7 @@ parse_node_info() {
     UPTIME="0"
     PUBLIC_IP="N/A"
 
-    if [ ! -f "$LATEST_LOG_FILE" ]; then return; f
+    if [ ! -f "$LATEST_LOG_FILE" ]; then return; fi
     local lines=$(tail -n 200 "$LATEST_LOG_FILE" 2>/dev/null)
     if [ -z "$lines" ]; then return; fi
     
@@ -1022,17 +1032,29 @@ do_setup() {
             # Fallback: start as background process if service failed
             echo "⚠ systemd service did not start. Falling back to background mode."
             echo "  Hint: Run 'loginctl enable-linger $CURRENT_USER' to allow user services."
+            if [ -f "$PID_FILE" ]; then
+                local old_pid
+                old_pid=$(cat "$PID_FILE")
+                kill -0 "$old_pid" 2>/dev/null && kill "$old_pid" 2>/dev/null
+                rm -f "$PID_FILE"
+            fi
             watchdog_loop &
             local new_pid=$!
-            echo $new_pid > "$PID_FILE"
+            echo "$new_pid" > "$PID_FILE"
             echo "✔ Watchdog started in background (PID: $new_pid)."
             echo "  Note: Will stop if SSH session ends. Run the hint above to fix."
         fi
     else
         # sysvinit / runit: fallback to background
+        if [ -f "$PID_FILE" ]; then
+            local old_pid
+            old_pid=$(cat "$PID_FILE")
+            kill -0 "$old_pid" 2>/dev/null && kill "$old_pid" 2>/dev/null
+            rm -f "$PID_FILE"
+        fi
         watchdog_loop &
         local new_pid=$!
-        echo $new_pid > "$PID_FILE"
+        echo "$new_pid" > "$PID_FILE"
         echo "✔ Watchdog started in background (PID: $new_pid)."
     fi
     echo ""
@@ -1053,9 +1075,6 @@ do_setup() {
 
 # Main routing logic
 case "$CMD" in
-    init)
-        # STEP 3 logic already handled CLI version/readme
-        ;;
     setup)
         do_setup
         SHOW_FOOTER_ON_EXIT=1

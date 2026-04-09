@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.1] - 2026-04-09
+### Fixed
+- parse_node_info(): syntax error "f" instead of "fi" caused crash
+  when called without a log file present (affects status, test-notify,
+  report, and every restart success notification)
+- Removed dead "init)" block from CLI case statement — init is fully
+  handled before case and never reaches it
+- do_setup() fallback: kill existing watchdog before starting new
+  background instance to prevent duplicate watchdog processes
+
 ## [1.2.0] - 2026-04-09
 ### Fixed
 - verify_startup() now re-detects the newest ARO log file on every poll iteration, fixing false "restart failed" when ARO creates a new timestamped log file after relaunch
