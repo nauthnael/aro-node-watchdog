@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.3.3
+# ARO Node Watchdog Script v1.3.4
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.3.3"
+SCRIPT_VERSION="1.3.4"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -24,7 +24,7 @@ STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.3.3                    ║
+║           ARO Node Watchdog v1.3.4                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -145,7 +145,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.3.3
+# Version: 1.3.4
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -185,7 +185,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.3.3
+# 🚀 ARO Node Watchdog v1.3.4
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -219,6 +219,25 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.3.4] - 2026-04-09
+### Fixed
+- All ARO log file operations (ls, tail, stat) now use
+  run_as_aro_user() helper — fixes verify_startup() always
+  timing out when watchdog runs as a different user than the
+  ARO node owner (e.g. root watching adam's ARO process),
+  causing false "restart failed" even when ARO started OK
+- Affected functions fixed: get_latest_aro_log(),
+  check_aro_health(), verify_startup(), parse_node_info(),
+  get_aro_log_snippet(), get_disconnect_duration()
+
+### Added
+- run_as_aro_user(): helper that transparently runs commands
+  as EFFECTIVE_USER via sudo -n when direct file access is
+  denied; falls back to direct execution if sudo unavailable
+- do_setup(): now detects and uninstalls any existing watchdog
+  installation before proceeding, preventing duplicate
+  processes and stale service files on reinstall
 
 ## [1.3.3] - 2026-04-09
 ### Fixed
@@ -703,13 +722,15 @@ get_aro_log_snippet() {
     local lines="${1:-5}"
     if [ -f "$LATEST_LOG_FILE" ]; then
         local snippet
-        snippet=$(tail -n "$lines" "$LATEST_LOG_FILE" 2>/dev/null \
+        snippet=$(run_as_aro_user tail -n "$lines" \
+                  "$LATEST_LOG_FILE" 2>/dev/null \
                   | grep -oP '\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\] \[(?:INFO|WARN|ERROR)\] .*' \
                   | sed 's/\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] \([0-9:]*\)\.[0-9]*\]/[\1]/g' \
                   | tail -n "$lines")
         if [ -z "$snippet" ]; then
             # Fallback: just return raw last lines if grep finds nothing
-            snippet=$(tail -n "$lines" "$LATEST_LOG_FILE" 2>/dev/null)
+            snippet=$(run_as_aro_user tail -n "$lines" \
+                      "$LATEST_LOG_FILE" 2>/dev/null)
         fi
         snippet=$(echo "$snippet" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
         echo "$snippet"
@@ -835,10 +856,26 @@ ${trend}
 # ─────────────────────────────────────────────────────────────
 # CORE ARO LOGIC
 # ─────────────────────────────────────────────────────────────
+
+# Run a command as EFFECTIVE_USER if we lack direct permission
+run_as_aro_user() {
+    # $@ = command to run
+    if [ "$EFFECTIVE_USER" = "$CURRENT_USER" ]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1 && \
+         sudo -n -u "$EFFECTIVE_USER" true 2>/dev/null; then
+        sudo -u "$EFFECTIVE_USER" "$@"
+    else
+        # Last resort: try directly (may fail with permission error)
+        "$@"
+    fi
+}
+
 get_latest_aro_log() {
-    if [ -d "$ARO_LOG_DIR" ]; then
-        local latest=$(ls -t "$ARO_LOG_DIR"/*.log 2>/dev/null | head -1)
-        echo "$latest"
+    if [ -d "$ARO_LOG_DIR" ] || \
+       run_as_aro_user test -d "$ARO_LOG_DIR" 2>/dev/null; then
+        run_as_aro_user ls -t "$ARO_LOG_DIR"/*.log 2>/dev/null \
+            | head -1
     fi
 }
 
@@ -850,7 +887,9 @@ check_aro_health() {
     fi
     
     if [ -f "$LATEST_LOG_FILE" ]; then
-        local mtime=$(stat -c %Y "$LATEST_LOG_FILE" 2>/dev/null)
+        local mtime
+        mtime=$(run_as_aro_user stat -c %Y "$LATEST_LOG_FILE" \
+                2>/dev/null)
         if [ -n "$mtime" ]; then
             local now=$(date +%s)
             local staleness=$((now - mtime))
@@ -870,7 +909,9 @@ get_disconnect_duration() {
         return
     fi
     
-    local last_status_line=$(tail -n 100 "$LATEST_LOG_FILE" | grep -E '"connect":"(connected|disconnected)"' | tail -1)
+    local last_status_line
+    last_status_line=$(run_as_aro_user tail -n 100 "$LATEST_LOG_FILE" \
+                       | grep -E '"connect":"(connected|disconnected)"' | tail -1)
     if echo "$last_status_line" | grep -q '"connect":"disconnected"'; then
         local timestamp_str=$(echo "$last_status_line" | awk -F'[][]' '{print $2}' | cut -d'.' -f1)
         if [ -n "$timestamp_str" ]; then
@@ -896,7 +937,9 @@ parse_node_info() {
     PUBLIC_IP="N/A"
 
     if [ ! -f "$LATEST_LOG_FILE" ]; then return; fi
-    local lines=$(tail -n 200 "$LATEST_LOG_FILE" 2>/dev/null)
+    local lines
+    lines=$(run_as_aro_user tail -n 200 "$LATEST_LOG_FILE" \
+            2>/dev/null)
     if [ -z "$lines" ]; then return; fi
     
     local val
@@ -930,7 +973,9 @@ verify_startup() {
         [ -n "$candidate" ] && LATEST_LOG_FILE="$candidate"
 
         if [ -f "$LATEST_LOG_FILE" ]; then
-            local lines=$(tail -n 50 "$LATEST_LOG_FILE" 2>/dev/null)
+            local lines
+            lines=$(run_as_aro_user tail -n 50 "$LATEST_LOG_FILE" \
+                    2>/dev/null)
             local has_info=$(echo "$lines" | grep -c "initial node info resolved")
             local has_conn=$(echo "$lines" | grep -c '"connect":"connected"')
             if [ "$has_info" -gt 0 ] && [ "$has_conn" -gt 0 ]; then
@@ -1361,6 +1406,32 @@ enable_linger() {
 
 do_setup() {
     resolve_effective_user
+
+    # Uninstall any existing watchdog installation first
+    local already_installed=0
+    if [ -d /run/systemd/system ]; then
+        if systemctl --user list-unit-files 2>/dev/null \
+                | grep -q 'aro-watchdog.service'; then
+            already_installed=1
+        fi
+    fi
+    if [ -f "$PID_FILE" ]; then
+        local existing_pid
+        existing_pid=$(cat "$PID_FILE")
+        if kill -0 "$existing_pid" 2>/dev/null; then
+            already_installed=1
+        fi
+    fi
+
+    if [ "$already_installed" -eq 1 ]; then
+        echo "⚠ Existing watchdog installation detected."
+        echo "  Uninstalling previous version first..."
+        do_uninstall >/dev/null 2>&1 || true
+        do_stop >/dev/null 2>&1 || true
+        sleep 2
+        echo "✔ Previous installation removed."
+        echo ""
+    fi
 
     # Reset stale watchdog state from any previous run
     if [ -f "$STATE_FILE" ]; then

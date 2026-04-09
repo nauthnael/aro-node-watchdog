@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.3.4] - 2026-04-09
+### Fixed
+- All ARO log file operations (ls, tail, stat) now use
+  run_as_aro_user() helper — fixes verify_startup() always
+  timing out when watchdog runs as a different user than the
+  ARO node owner (e.g. root watching adam's ARO process),
+  causing false "restart failed" even when ARO started OK
+- Affected functions fixed: get_latest_aro_log(),
+  check_aro_health(), verify_startup(), parse_node_info(),
+  get_aro_log_snippet(), get_disconnect_duration()
+
+### Added
+- run_as_aro_user(): helper that transparently runs commands
+  as EFFECTIVE_USER via sudo -n when direct file access is
+  denied; falls back to direct execution if sudo unavailable
+- do_setup(): now detects and uninstalls any existing watchdog
+  installation before proceeding, preventing duplicate
+  processes and stale service files on reinstall
+
 ## [1.3.3] - 2026-04-09
 ### Fixed
 - restart_aro(): replaced "su" with "sudo -u" to launch ARO
