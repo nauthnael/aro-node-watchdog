@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.3.6
+# ARO Node Watchdog Script v1.4.0
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.3.6"
+SCRIPT_VERSION="1.4.0"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -72,7 +72,7 @@ _require_root "$@"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.3.6                    ║
+║           ARO Node Watchdog v1.4.0                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -193,7 +193,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.3.6
+# Version: 1.4.0
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -233,7 +233,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.3.6
+# 🚀 ARO Node Watchdog v1.4.0
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -267,6 +267,26 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.4.0] - 2026-04-10
+### Changed
+- Switched from systemd USER service to SYSTEM service
+  (/etc/systemd/system/aro-watchdog.service) — fixes service
+  immediately exiting when ExecStart path is not readable by
+  EFFECTIVE_USER (e.g. script lives in /root/ but service ran
+  as ubuntu)
+- systemctl_user() now wraps plain "systemctl" (no --user)
+  since the watchdog runs as root via system service
+- Service unit now uses User=root with WantedBy=multi-user.target
+  — ARO itself still launches as EFFECTIVE_USER via sudo -u,
+  so ARO runs as the correct unprivileged user (safe)
+- System services survive reboot without loginctl linger
+- do_setup(): removed [0/3] linger step (not needed for
+  system services)
+- do_uninstall(): updated to remove system service file;
+  also cleans up legacy user service files if present
+- do_setup() already_installed check updated to use system
+  service detection
 
 ## [1.3.6] - 2026-04-10
 ### Fixed
@@ -1047,8 +1067,7 @@ verify_startup() {
         local candidate=$(get_latest_aro_log)
         [ -n "$candidate" ] && LATEST_LOG_FILE="$candidate"
 
-        if run_as_aro_user test -f "$LATEST_LOG_FILE" \
-                2>/dev/null; then
+        if [ -f "$LATEST_LOG_FILE" ]; then
             local lines
             lines=$(run_as_aro_user tail -n 50 "$LATEST_LOG_FILE" \
                     2>/dev/null)
@@ -1284,10 +1303,10 @@ do_status() {
             svc_pid=$(systemctl_user show aro-watchdog \
                       --property=MainPID --value 2>/dev/null)
             if [ -n "$svc_pid" ] && [ "$svc_pid" != "0" ]; then
-                w_status="Running (systemd)"
+                w_status="Running (systemd system service)"
                 w_pid="$svc_pid"
             else
-                w_status="Running (systemd)"
+                w_status="Running (systemd system service)"
             fi
         fi
     fi
@@ -1316,31 +1335,10 @@ do_status() {
     echo "Reward Yest.    : $(format_number "$REWARD_YESTERDAY")"
 }
 
-# Run "systemctl --user" as EFFECTIVE_USER with correct D-Bus env
+# Wrapper for systemctl (system-level, no --user needed)
+# When running as root we use system services, not user services
 systemctl_user() {
-    local effective_uid
-    effective_uid=$(id -u "$EFFECTIVE_USER" 2>/dev/null)
-
-    if [ -z "$effective_uid" ]; then
-        # Cannot resolve UID — try directly
-        systemctl --user "$@"
-        return $?
-    fi
-
-    local xdg_runtime="/run/user/${effective_uid}"
-
-    if [ "$CURRENT_USER" = "$EFFECTIVE_USER" ]; then
-        # Same user — just set XDG_RUNTIME_DIR if missing
-        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$xdg_runtime}" \
-            systemctl --user "$@"
-    else
-        # Different user (e.g. root running for ubuntu) —
-        # must run as EFFECTIVE_USER with correct environment
-        sudo -u "$EFFECTIVE_USER" \
-            XDG_RUNTIME_DIR="$xdg_runtime" \
-            DBUS_SESSION_BUS_ADDRESS="unix:path=${xdg_runtime}/bus" \
-            systemctl --user "$@"
-    fi
+    systemctl "$@"
 }
 
 do_install() {
@@ -1354,27 +1352,26 @@ do_install() {
     fi
     
     if [ "$is_systemd" -eq 1 ]; then
-        local unit_dir="$EFFECTIVE_HOME/.config/systemd/user"
-        mkdir -p "$unit_dir"
-        local svc_file="$unit_dir/aro-watchdog.service"
+        local svc_file="/etc/systemd/system/aro-watchdog.service"
         cat > "$svc_file" <<EOF
 [Unit]
 Description=ARO Node Watchdog
-After=network.target graphical.target
+After=network.target
 
 [Service]
 Type=simple
+User=root
 ExecStart=${SCRIPT_DIR}/aro-watchdog.sh start-foreground
 Restart=always
 RestartSec=10
 Environment="DISPLAY=:20"
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 EOF
-        systemctl_user daemon-reload || true
-        systemctl_user enable --now aro-watchdog || true
-        echo "Installed as systemd user service."
+        systemctl daemon-reload || true
+        systemctl enable --now aro-watchdog || true
+        echo "Installed as systemd system service."
     
     elif [ "$is_runit" -eq 1 ]; then
         echo "Detected runit init system."
@@ -1457,14 +1454,24 @@ EOF
 }
 
 do_uninstall() {
-    if systemctl_user list-unit-files | grep -q 'aro-watchdog.service'; then
-        systemctl_user disable --now aro-watchdog || true
-        rm -f "$EFFECTIVE_HOME/.config/systemd/user/aro-watchdog.service"
-        systemctl_user daemon-reload || true
-        echo "systemd service uninstalled."
-    else
-        echo "Uninstall for runit/sysvinit must be done manually."
+    # System service uninstall
+    if systemctl list-unit-files 2>/dev/null \
+            | grep -q 'aro-watchdog.service'; then
+        systemctl disable --now aro-watchdog 2>/dev/null || true
+        rm -f "/etc/systemd/system/aro-watchdog.service"
+        systemctl daemon-reload || true
+        echo "systemd system service uninstalled."
     fi
+
+    # Legacy: also clean up old user service files if present
+    if [ -f "$EFFECTIVE_HOME/.config/systemd/user/aro-watchdog.service" ]; then
+        rm -f "$EFFECTIVE_HOME/.config/systemd/user/aro-watchdog.service"
+        sudo -u "$EFFECTIVE_USER" \
+            XDG_RUNTIME_DIR="/run/user/$(id -u "$EFFECTIVE_USER")" \
+            systemctl --user daemon-reload 2>/dev/null || true
+        echo "Legacy user service files cleaned up."
+    fi
+
     do_stop
     echo "Done."
 }
@@ -1513,7 +1520,7 @@ do_setup() {
     # Uninstall any existing watchdog installation first
     local already_installed=0
     if [ -d /run/systemd/system ]; then
-        if systemctl_user list-unit-files 2>/dev/null \
+        if systemctl list-unit-files 2>/dev/null \
                 | grep -q 'aro-watchdog.service'; then
             already_installed=1
         fi
@@ -1551,11 +1558,6 @@ do_setup() {
     fi
 
     echo "=== ARO Watchdog Setup ==="
-    echo ""
-
-    # Enable systemd linger BEFORE installing service
-    echo "[0/3] Enabling systemd linger..."
-    enable_linger
     echo ""
 
     # Step 1: Install as service

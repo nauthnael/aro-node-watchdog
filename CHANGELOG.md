@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.4.0] - 2026-04-10
+### Changed
+- Switched from systemd USER service to SYSTEM service
+  (/etc/systemd/system/aro-watchdog.service) — fixes service
+  immediately exiting when ExecStart path is not readable by
+  EFFECTIVE_USER (e.g. script lives in /root/ but service ran
+  as ubuntu)
+- systemctl_user() now wraps plain "systemctl" (no --user)
+  since the watchdog runs as root via system service
+- Service unit now uses User=root with WantedBy=multi-user.target
+  — ARO itself still launches as EFFECTIVE_USER via sudo -u,
+  so ARO runs as the correct unprivileged user (safe)
+- System services survive reboot without loginctl linger
+- do_setup(): removed [0/3] linger step (not needed for
+  system services)
+- do_uninstall(): updated to remove system service file;
+  also cleans up legacy user service files if present
+- do_setup() already_installed check updated to use system
+  service detection
+
 ## [1.3.6] - 2026-04-10
 ### Fixed
 - All systemctl --user calls now run via systemctl_user()
