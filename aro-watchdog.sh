@@ -1,7 +1,11 @@
 #!/bin/bash
-# ARO Node Watchdog Script
+# ─────────────────────────────────────────────────────────────
+# ARO Node Watchdog Script v1.1.1
+# ─────────────────────────────────────────────────────────────
 
-# Environment AUTO-DETECTION
+# STEP 1: Define Constants
+SCRIPT_VERSION="1.1.1"
+
 CURRENT_USER=$(whoami)
 HOME_DIR="$HOME"
 export DISPLAY=":20"
@@ -16,17 +20,220 @@ CONFIG_FILE="$SCRIPT_DIR/aro-watchdog.conf"
 PID_FILE="/tmp/aro_watchdog_${CURRENT_USER}.pid"
 STATE_FILE="/tmp/aro_watchdog_state_${CURRENT_USER}"
 
-# Load Config
+show_banner() {
+    cat << "EOF"
+╔═══════════════════════════════════════════════════════╗
+║           ARO Node Watchdog v1.1.1                    ║
+║       Automated crash recovery for ARO DePIN nodes    ║
+╠═══════════════════════════════════════════════════════╣
+║  🐦 Connect with the author: https://x.com/tuangg     ║
+╚═══════════════════════════════════════════════════════╝
+EOF
+}
+
+show_footer() {
+    cat << "EOF"
+─────────────────────────────────────────────────────────
+ Thanks for using ARO Watchdog! Follow @tuangg on X/Twitter
+ for updates, tips and new scripts: https://x.com/tuangg
+─────────────────────────────────────────────────────────
+EOF
+}
+
+create_default_config() {
+    mkdir -p "$SCRIPT_DIR"
+
+    if [ -f "$CONFIG_FILE" ]; then
+        echo "Config already exists at $CONFIG_FILE"
+        if [ -n "$CLI_TOKEN" ]; then
+            sed -i "s|^TG_BOT_TOKEN=.*|TG_BOT_TOKEN=\"${CLI_TOKEN}\"|" "$CONFIG_FILE" 2>/dev/null
+        fi
+        if [ -n "$CLI_CHATID" ]; then
+            sed -i "s|^TG_CHAT_ID=.*|TG_CHAT_ID=\"${CLI_CHATID}\"|" "$CONFIG_FILE" 2>/dev/null
+        fi
+        return 0
+    fi
+
+    cat > "$CONFIG_FILE" << 'EOF'
+# ARO Node Watchdog — Configuration File
+# Version: 1.1.1
+# Edit this file then run: ./aro-watchdog.sh start
+
+# === Telegram ===
+TG_BOT_TOKEN=""
+TG_CHAT_ID=""
+
+# === Timing ===
+CHECK_INTERVAL=30
+LOG_STALE_MINUTES=10
+DISCONNECT_ALERT_MINUTES=15
+STARTUP_TIMEOUT=90
+RESET_STABLE_HOURS=2
+
+# === Restart Policy ===
+MAX_RETRIES=5
+BACKOFF_TIMES="30 60 120 300 600"
+
+# === Daily Report ===
+DAILY_REPORT_HOUR=7
+
+# === ARO Binary ===
+ARO_BINARY="/usr/bin/ARO"
+EOF
+
+    if [ -n "$CLI_TOKEN" ]; then
+        sed -i "s|^TG_BOT_TOKEN=\"\"|TG_BOT_TOKEN=\"${CLI_TOKEN}\"|" "$CONFIG_FILE" 2>/dev/null
+    fi
+    if [ -n "$CLI_CHATID" ]; then
+        sed -i "s|^TG_CHAT_ID=\"\"|TG_CHAT_ID=\"${CLI_CHATID}\"|" "$CONFIG_FILE" 2>/dev/null
+    fi
+
+    cat > "$SCRIPT_DIR/README.md" << 'EOF'
+# 🚀 ARO Node Watchdog v1.1.1
+
+Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
+
+## ⚡ Cài đặt nhanh (One-liner)
+
+Sao chép và dán dòng lệnh bên dưới vào terminal của bạn (thay `TOKEN` và `ID` bằng thông tin của bạn):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nauthnael/aro-node-watchdog/main/aro-watchdog.sh -o aro-watchdog.sh && chmod +x aro-watchdog.sh && ./aro-watchdog.sh init --token "TOKEN_CUA_BAN" --chatid "ID_CUA_BAN" && ./aro-watchdog.sh install && ./aro-watchdog.sh start
+```
+
+## 🛠 Tính năng
+- **Fix lỗi treo (Hung detection):** Tự động phát hiện khi log không cập nhật sau 10 phút.
+- **Fix lỗi chết (Process crash):** Tự khởi động lại ngay khi tiến trình biến mất.
+- **Báo cáo Reward:** Tự động gửi lợi nhuận ngày hôm trước vào 7h sáng mỗi ngày.
+- **Quản lý Service:** Hỗ trợ cài đặt như một service hệ thống (Systemd/SysVinit).
+
+## 💻 Các lệnh quan trọng
+- `./aro-watchdog.sh status`: Kiểm tra tình trạng node.
+- `./aro-watchdog.sh report`: Gửi báo cáo Reward ngay lập tức qua Telegram.
+- `./aro-watchdog.sh log`: Theo dõi hoạt động của watchdog.
+
+---
+**GitHub:** [nauthnael/aro-node-watchdog](https://github.com/nauthnael/aro-node-watchdog)  
+**Author:** [tuangg](https://x.com/tuangg)
+EOF
+
+    cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
+# Changelog
+
+## [1.1.1] - 2026-04-09
+### Fixed
+- Boot-order bug: config validation ran before init command handler, causing "Configuration file not found" error on first run
+- create_default_config() now creates SCRIPT_DIR if missing
+- CLI flags --token/--chatid now applied during init even if config file already exists
+- Telegram validation skipped for commands that do not need it
+
+## [1.1.0] - 2026-04-09
+### Fixed
+- Sửa lỗi Regex parsing dữ liệu từ tệp log của ARO.
+- Khắc phục lỗi phạm vi biến (scope) khi sử dụng `flock`.
+- Sửa công thức tính Delta Reward (hỗ trợ số thực).
+- Chống spam thông báo mất kết nối (giới hạn 1 thông báo/giờ).
+
+### Updated
+- Tối ưu lệnh chạy ARO: `DISPLAY=:20 /usr/bin/ARO`.
+- Thêm cờ lệnh `--token` và `--chatid` hỗ trợ cài đặt nhanh qua Curl.
+- Tự động tạo file `README.md` và `CHANGELOG.md` khi chạy lệnh `init`.
+- Giao diện CLI mới với Banner ASCII chuyên nghiệp.
+
+## [1.0.0] - 2026-04-09
+### Added
+- Bản phát hành đầu tiên theo yêu cầu của @tuangg.
+- Tính năng giám sát chết/treo cơ bản.
+- Hỗ trợ Systemd service, Runit và SysVinit.
+EOF
+
+    echo "✔ Config created: $CONFIG_FILE"
+    echo "✔ README.md created: $SCRIPT_DIR/README.md"
+    echo "✔ CHANGELOG.md created: $SCRIPT_DIR/CHANGELOG.md"
+    echo "→ Next steps:"
+    echo "  1. Edit config if needed: nano $CONFIG_FILE"
+    echo "  2. Install service: ./aro-watchdog.sh install"
+    echo "  3. Start watchdog:  ./aro-watchdog.sh start"
+}
+
+# STEP 2: Parse CLI flags
+CMD=""
+CLI_TOKEN=""
+CLI_CHATID=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --token)
+            CLI_TOKEN="$2"
+            shift 2
+            ;;
+        --chatid)
+            CLI_CHATID="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            shift
+            ;;
+        *)
+            if [ -z "$CMD" ]; then
+                CMD="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+# STEP 3: Handle commands without config
+if [[ "$CMD" =~ ^(init|version|readme)$ ]]; then
+    show_banner
+    if [ "$CMD" = "init" ]; then
+        create_default_config
+        show_footer
+    elif [ "$CMD" = "version" ]; then
+        echo "ARO Watchdog v${SCRIPT_VERSION}"
+        show_footer
+    elif [ "$CMD" = "readme" ]; then
+        [ -f "$SCRIPT_DIR/README.md" ] && cat "$SCRIPT_DIR/README.md"
+    fi
+    exit 0
+fi
+
+# STEP 4: Check if config exists
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "Configuration file not found at $CONFIG_FILE"
+    echo "Config not found. Run first: $0 init"
     exit 1
 fi
-source "$CONFIG_FILE"
 
-# Config Validation
-if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
-    echo "FATAL: TG_BOT_TOKEN and TG_CHAT_ID must be set in $CONFIG_FILE"
-    exit 1
+# STEP 5: Source config
+source "$CONFIG_FILE" 2>/dev/null
+
+# STEP 6 & 7: Override with CLI flags & Auto-persist
+if [ -n "$CLI_TOKEN" ]; then
+    if [ -z "$TG_BOT_TOKEN" ]; then
+        sed -i "s|^TG_BOT_TOKEN=\"\"|TG_BOT_TOKEN=\"$CLI_TOKEN\"|" "$CONFIG_FILE" 2>/dev/null
+    fi
+    TG_BOT_TOKEN="$CLI_TOKEN"
+fi
+
+if [ -n "$CLI_CHATID" ]; then
+    if [ -z "$TG_CHAT_ID" ]; then
+        sed -i "s|^TG_CHAT_ID=\"\"|TG_CHAT_ID=\"$CLI_CHATID\"|" "$CONFIG_FILE" 2>/dev/null
+    fi
+    TG_CHAT_ID="$CLI_CHATID"
+fi
+
+# STEP 8: Validate TG_BOT_TOKEN and TG_CHAT_ID
+if [[ ! "$CMD" =~ ^(stop|status|log|config|uninstall)$ ]]; then
+    if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+        echo "FATAL: TG_BOT_TOKEN and TG_CHAT_ID must be set in $CONFIG_FILE"
+        exit 1
+    fi
+fi
+
+# Show banner for the rest (unless hidden)
+if [[ -n "$CMD" && ! "$CMD" =~ ^(start-foreground|log)$ ]]; then
+    show_banner
 fi
 
 # Global Stats Variables
@@ -45,10 +252,11 @@ last_crash_epoch=0
 last_restart_epoch=0
 restart_count_24h=0
 last_stable_epoch=$(date +%s)
+last_disconnect_alert_epoch=0
 last_daily_report_date=""
 
 # ─────────────────────────────────────────────────────────────
-# LOGGING (watchdog's own log)
+# LOGGING
 # ─────────────────────────────────────────────────────────────
 log() {
     local level="${2:-INFO}"
@@ -56,7 +264,6 @@ log() {
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
     local log_line="[$timestamp] [$level] $msg"
     
-    # Print to stdout/stderr if run in foreground
     if [ -t 1 ]; then
         if [ "$level" = "ERROR" ] || [ "$level" = "FATAL" ]; then
             echo "$log_line" >&2
@@ -65,9 +272,8 @@ log() {
         fi
     fi
     
-    # Log rotation (if > 5MB)
     if [ -f "$WATCHDOG_LOG" ]; then
-        local size=$(wc -c < "$WATCHDOG_LOG" 2>/dev/null || echo 0)
+        local size=$(wc -c < "$WATCHDOG_LOG" 2>/dev/null || stat -c%s "$WATCHDOG_LOG" 2>/dev/null || echo 0)
         if [ "$size" -gt 5242880 ]; then
             mv -f "${WATCHDOG_LOG}.2" "${WATCHDOG_LOG}.3" 2>/dev/null
             mv -f "${WATCHDOG_LOG}.1" "${WATCHDOG_LOG}.2" 2>/dev/null
@@ -87,12 +293,10 @@ load_state() {
     last_restart_epoch=0
     restart_count_24h=0
     last_stable_epoch=$(date +%s)
+    last_disconnect_alert_epoch=0
     
     if [ -f "$STATE_FILE" ]; then
-        (
-            flock -x 200
-            source "$STATE_FILE"
-        ) 200<"$STATE_FILE" 2>/dev/null
+        source "$STATE_FILE" 2>/dev/null
     fi
 }
 
@@ -105,6 +309,7 @@ last_crash_epoch=$last_crash_epoch
 last_restart_epoch=$last_restart_epoch
 restart_count_24h=$restart_count_24h
 last_stable_epoch=$last_stable_epoch
+last_disconnect_alert_epoch=$last_disconnect_alert_epoch
 EOF
     ) 200> "${STATE_FILE}.lock"
 }
@@ -112,8 +317,6 @@ EOF
 # ─────────────────────────────────────────────────────────────
 # UTILITY FUNCTIONS
 # ─────────────────────────────────────────────────────────────
-
-# Format number with commas
 format_number() {
     local raw="$1"
     if [ -z "$raw" ] || [ "$raw" = "N/A" ]; then
@@ -134,7 +337,6 @@ format_number() {
     }'
 }
 
-# Format uptime ratio as percentage
 format_uptime() {
     local ratio="$1"
     if [ -z "$ratio" ] || [ "$ratio" = "N/A" ]; then
@@ -144,7 +346,6 @@ format_uptime() {
     echo "$ratio" | awk '{printf "%.1f", $1 * 100}'
 }
 
-# Send Telegram Message
 send_telegram() {
     local msg="$1"
     curl -s -X POST \
@@ -157,7 +358,6 @@ send_telegram() {
 # ─────────────────────────────────────────────────────────────
 # NOTIFICATION TEMPLATES
 # ─────────────────────────────────────────────────────────────
-
 send_notify_crash() {
     local reason="$1"
     local retry_num="$2"
@@ -226,9 +426,9 @@ send_notify_disconnect_alert() {
 send_daily_report() {
     parse_node_info
     
-    local delta=$(echo "$REWARD_TODAY - $REWARD_YESTERDAY" | awk '{print $1}')
+    local delta=$(awk "BEGIN {print $REWARD_TODAY - $REWARD_YESTERDAY}")
+    local cmp=$(awk "BEGIN {if ($delta > 0) print 1; else if ($delta < 0) print -1; else print 0}")
     local trend="➡️ No change"
-    local cmp=$(echo "$delta" | awk '{if ($1 > 0) print 1; else if ($1 < 0) print -1; else print 0}')
     
     if [ "$cmp" -eq 1 ]; then
         trend="📈 +$(format_number "$delta")"
@@ -259,7 +459,6 @@ ${trend}
 # ─────────────────────────────────────────────────────────────
 # CORE ARO LOGIC
 # ─────────────────────────────────────────────────────────────
-
 get_latest_aro_log() {
     if [ -d "$ARO_LOG_DIR" ]; then
         local latest=$(ls -t "$ARO_LOG_DIR"/*.log 2>/dev/null | head -1)
@@ -320,33 +519,30 @@ parse_node_info() {
     UPTIME="0"
     PUBLIC_IP="N/A"
 
-    if [ ! -f "$LATEST_LOG_FILE" ]; then
-        return
-    fi
-
+    if [ ! -f "$LATEST_LOG_FILE" ]; then return; fi
     local lines=$(tail -n 200 "$LATEST_LOG_FILE" 2>/dev/null)
     if [ -z "$lines" ]; then return; fi
     
     local val
-    val=$(echo "$lines" | grep -oP '"serialNumber":"\?\K[^"]+' | tail -1)
+    val=$(echo "$lines" | grep -oP '(?<="serialNumber":")[^"]+' | tail -1)
     [ -n "$val" ] && SERIAL="$val"
     
-    val=$(echo "$lines" | grep -oP '"email":"\?\K[^"]+' | tail -1)
+    val=$(echo "$lines" | grep -oP '(?<="email":")[^"]+' | tail -1)
     [ -n "$val" ] && EMAIL="$val"
     
-    val=$(echo "$lines" | grep -oP '"connect":"\?\K(connected|disconnected)' | tail -1)
+    val=$(echo "$lines" | grep -oP '(?<="connect":")(connected|disconnected)' | tail -1)
     [ -n "$val" ] && CONNECT_STATUS="$val"
     
-    val=$(echo "$lines" | grep -oP '"today":\s*\K[0-9.]+' | tail -1)
+    val=$(echo "$lines" | grep -oP '(?<="today":)[0-9.]+' | tail -1)
     [ -n "$val" ] && REWARD_TODAY="$val"
     
-    val=$(echo "$lines" | grep -oP '"yesterday":\s*\K[0-9.]+' | tail -1)
+    val=$(echo "$lines" | grep -oP '(?<="yesterday":)[0-9.]+' | tail -1)
     [ -n "$val" ] && REWARD_YESTERDAY="$val"
     
-    val=$(echo "$lines" | grep -oP '"uptime":\s*\K[0-9.]+' | tail -1)
+    val=$(echo "$lines" | grep -oP '(?<="uptime":)[0-9.]+' | tail -1)
     [ -n "$val" ] && UPTIME="$val"
     
-    val=$(echo "$lines" | grep -oP '"publicIp":"\?\K[^"]+' | tail -1)
+    val=$(echo "$lines" | grep -oP '(?<="publicIp":")[^"]+' | tail -1)
     [ -n "$val" ] && PUBLIC_IP="$val"
 }
 
@@ -381,7 +577,7 @@ restart_aro() {
         return
     fi
     
-    "$ARO_BINARY" >/dev/null 2>&1 &
+    DISPLAY=:20 "$ARO_BINARY" >/dev/null 2>&1 &
     
     sleep 5
     LATEST_LOG_FILE=$(get_latest_aro_log)
@@ -400,10 +596,8 @@ watchdog_loop() {
     trap 'log "Watchdog stopping..."; rm -f "$PID_FILE"; exit 0' SIGTERM SIGINT
 
     while true; do
-        # 1. Daily Report Check
         local current_hour=$(date +%H)
         local current_date=$(date +%Y-%m-%d)
-        # Parse current_hour to avoid octal issues
         current_hour=$((10#$current_hour))
         local daily_hour=$((10#$DAILY_REPORT_HOUR))
         
@@ -412,13 +606,17 @@ watchdog_loop() {
             last_daily_report_date="$current_date"
         fi
 
-        # 2. Health Check
         local health=$(check_aro_health)
         
         if [ "$health" = "ok" ]; then
             local disc_minutes=$(get_disconnect_duration)
             if [ "$disc_minutes" -ge "$DISCONNECT_ALERT_MINUTES" ]; then
-                send_notify_disconnect_alert "$disc_minutes"
+                local now=$(date +%s)
+                if [ $((now - last_disconnect_alert_epoch)) -gt 3600 ]; then
+                    send_notify_disconnect_alert "$disc_minutes"
+                    last_disconnect_alert_epoch=$now
+                    save_state
+                fi
             fi
             
             local now=$(date +%s)
@@ -428,13 +626,16 @@ watchdog_loop() {
                 retry_count=0
                 save_state
             fi
+            if [ $((now - last_restart_epoch)) -gt 86400 ]; then
+                restart_count_24h=0
+                save_state
+            fi
             last_stable_epoch=$now
             
             sleep "$CHECK_INTERVAL"
             continue
         fi
 
-        # 3. Handle Crash/Hung
         local reason="Process died"
         [ "$health" = "hung" ] && reason="Log silent > ${LOG_STALE_MINUTES}min"
         
@@ -447,22 +648,21 @@ watchdog_loop() {
             continue
         fi
 
-        # 4. Get Backoff Delay
         local backoff_arr=($BACKOFF_TIMES)
         local backoff=${backoff_arr[$retry_count]}
         if [ -z "$backoff" ]; then
-            backoff=${backoff_arr[${#backoff_arr[@]}-1]} # last element
+            backoff=${backoff_arr[${#backoff_arr[@]}-1]}
         fi
         
         retry_count=$((retry_count + 1))
         restart_count_24h=$((restart_count_24h + 1))
+        last_restart_epoch=$(date +%s)
         save_state
 
         send_notify_crash "$reason" "$retry_count" "$MAX_RETRIES"
         log "Waiting ${backoff}s before restart attempt ${retry_count}..."
         sleep "$backoff"
 
-        # 5. Restart Action
         local start_epoch=$(date +%s)
         local result=$(restart_aro)
         local elapsed=$(($(date +%s) - start_epoch))
@@ -483,12 +683,12 @@ watchdog_loop() {
 # ─────────────────────────────────────────────────────────────
 # CLI INTERFACE
 # ─────────────────────────────────────────────────────────────
-
 do_start() {
     if [ -f "$PID_FILE" ]; then
         local pid=$(cat "$PID_FILE")
         if kill -0 "$pid" 2>/dev/null; then
             echo "Watchdog already running (PID: $pid)"
+            show_footer
             exit 0
         else
             rm -f "$PID_FILE"
@@ -500,6 +700,7 @@ do_start() {
     local new_pid=$!
     echo $new_pid > "$PID_FILE"
     echo "Watchdog started (PID: $new_pid)"
+    show_footer
 }
 
 do_stop() {
@@ -511,6 +712,7 @@ do_stop() {
     else
         echo "Watchdog is not running."
     fi
+    show_footer
 }
 
 do_status() {
@@ -546,6 +748,7 @@ do_status() {
     echo "Uptime Ratio   : $(format_uptime "$UPTIME")%"
     echo "Reward Today   : $(format_number "$REWARD_TODAY")"
     echo "Reward Yest.   : $(format_number "$REWARD_YESTERDAY")"
+    show_footer
 }
 
 do_install() {
@@ -591,13 +794,75 @@ EOF
         echo "Warn: Requires sudo for runit install."
         
     else
-        echo "Detected sysvinit init system (e.g. Devuan sysvinit)."
-        echo "Run the following commands as root to install:"
-        echo "  # Create /etc/init.d/aro-watchdog with LSB headers"
-        echo "  # Start/stop should call: su -c \"${SCRIPT_DIR}/aro-watchdog.sh ...\" ${CURRENT_USER}"
-        echo "  # Run: sudo update-rc.d aro-watchdog defaults"
-        echo "Warn: Requires sudo for sysvinit install."
+        echo "Detected sysvinit init system."
+        local init_file="/etc/init.d/aro-watchdog"
+        
+        local SCMD=""
+        if command -v sudo >/dev/null 2>&1; then
+            SCMD="sudo "
+        elif [ "$CURRENT_USER" = "root" ]; then
+            SCMD=""
+        fi
+        
+        if [[ -n "$SCMD" || "$CURRENT_USER" == "root" ]]; then
+            cat <<EOF | $SCMD tee "$init_file" >/dev/null
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          aro-watchdog
+# Required-Start:    \$network \$local_fs \$remote_fs
+# Required-Stop:     \$network \$local_fs \$remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: ARO Node Watchdog
+# Description:       Automated crash recovery for ARO DePIN nodes
+### END INIT INFO
+
+DAEMON="${SCRIPT_DIR}/aro-watchdog.sh"
+DAEMON_ARGS="start-foreground"
+USER="${CURRENT_USER}"
+PIDFILE="/tmp/aro_watchdog_\${USER}.pid"
+
+case "\$1" in
+  start)
+    echo "Starting ARO Watchdog..."
+    start-stop-daemon --start --background --make-pidfile --pidfile "\$PIDFILE" \\
+                      --chuid "\$USER" --exec /bin/bash -- -c "\$DAEMON \$DAEMON_ARGS"
+    ;;
+  stop)
+    echo "Stopping ARO Watchdog..."
+    start-stop-daemon --stop --pidfile "\$PIDFILE" --retry 10
+    rm -f "\$PIDFILE"
+    ;;
+  restart)
+    \$0 stop
+    sleep 2
+    \$0 start
+    ;;
+  status)
+    if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
+        echo "ARO Watchdog is running."
+        exit 0
+    else
+        echo "ARO Watchdog is stopped."
+        exit 1
     fi
+    ;;
+  *)
+    echo "Usage: \$0 {start|stop|restart|status}"
+    exit 1
+    ;;
+esac
+exit 0
+EOF
+            $SCMD chmod +x "$init_file"
+            $SCMD update-rc.d aro-watchdog defaults
+            echo "sysvinit service installed successfully (used sudo)."
+        else
+            echo "Failed: sysvinit install requires sudo or root privileges."
+            echo "To install manually, create $init_file with LSB headers and start-stop-daemon, then run: update-rc.d aro-watchdog defaults."
+        fi
+    fi
+    show_footer
 }
 
 do_uninstall() {
@@ -607,80 +872,26 @@ do_uninstall() {
         systemctl --user daemon-reload || true
         echo "systemd service uninstalled."
     else
-        echo "Uninstall for runit/sysvinit must be done manually by root."
+        echo "Uninstall for runit/sysvinit must be done manually."
     fi
     do_stop
-    echo "Done."
+    echo "Uninstall complete."
 }
 
-do_test_notify() {
-    LATEST_LOG_FILE=$(get_latest_aro_log)
-    parse_node_info
-    
-    local f_today=$(format_number "$REWARD_TODAY")
-    local f_yest=$(format_number "$REWARD_YESTERDAY")
-    local f_uptime=$(format_uptime "$UPTIME")
-    
-    local msg="🧪 <b>[TEST] [ARO INFO] ${HOSTNAME}</b>
-──────────────────────
-🖥️ VPS: ${HOSTNAME}
-👤 User: ${CURRENT_USER}
-🔢 Serial: ${SERIAL}
-📧 Account: ${EMAIL}
-🌐 IP: ${PUBLIC_IP}
-💰 Reward today: ${f_today} pts
-💰 Reward yesterday: ${f_yest} pts
-📶 Uptime: ${f_uptime}%"
-
-    send_telegram "$msg"
-    echo "Test notification sent."
-}
-
-do_report() {
-    LATEST_LOG_FILE=$(get_latest_aro_log)
-    send_daily_report
-    echo "Daily report sent."
-}
-
-# Core Routing
-case "$1" in
-    start)
-        do_start
-        ;;
-    stop)
-        do_stop
-        ;;
-    restart)
-        do_stop
-        sleep 2
-        do_start
-        ;;
-    status)
-        do_status
-        ;;
-    install)
-        do_install
-        ;;
-    uninstall)
-        do_uninstall
-        ;;
-    log)
-        tail -f "$WATCHDOG_LOG"
-        ;;
-    test-notify)
-        do_test_notify
-        ;;
-    report)
-        do_report
-        ;;
-    config)
-        ${EDITOR:-nano} "$CONFIG_FILE"
-        ;;
-    start-foreground)
-        watchdog_loop
-        ;;
+case "$CMD" in
+    start)       do_start ;;
+    stop)        do_stop ;;
+    restart)     do_stop; sleep 2; do_start ;;
+    status)      do_status ;;
+    install)     do_install ;;
+    uninstall)   do_uninstall ;;
+    log)         tail -f "$WATCHDOG_LOG" ;;
+    test-notify) LATEST_LOG_FILE=$(get_latest_aro_log); parse_node_info; send_notify_restart_success 0; echo "Sent"; show_footer ;;
+    report)      LATEST_LOG_FILE=$(get_latest_aro_log); send_daily_report; echo "Sent"; show_footer ;;
+    config)      ${EDITOR:-nano} "$CONFIG_FILE" ;;
+    start-foreground) watchdog_loop ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|install|uninstall|log|test-notify|report|config|start-foreground}"
+        echo "Usage: $0 {init|start|stop|restart|status|install|uninstall|log|test-notify|report|config|start-foreground|readme|version} [--token TOKEN] [--chatid ID]"
         exit 1
         ;;
 esac

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1] - 2026-04-09
+### Fixed
+- Boot-order bug: config validation ran before init command handler, causing "Configuration file not found" error on first run
+- create_default_config() now creates SCRIPT_DIR if missing
+- CLI flags --token/--chatid now applied during init even if config file already exists
+- Telegram validation skipped for commands that do not need it
+
 ## [1.1.0] - 2026-04-09
 ### Fixed
 - Sửa lỗi Regex parsing dữ liệu từ tệp log của ARO.
