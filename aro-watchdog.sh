@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.4.1
+# ARO Node Watchdog Script v1.4.2
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.4.1"
+SCRIPT_VERSION="1.4.2"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -72,7 +72,7 @@ _require_root "$@"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.4.1                    ║
+║           ARO Node Watchdog v1.4.2                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -193,7 +193,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.4.1
+# Version: 1.4.2
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -233,7 +233,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.4.1
+# 🚀 ARO Node Watchdog v1.4.2
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -266,6 +266,21 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.4.2] - 2026-04-10
+### Added
+- format_time_ago(): converts elapsed seconds to human-readable
+  string (e.g. "1d 2h 30m ago", "45m 12s ago")
+- get_last_online_info(): scans last 500 lines of ARO log to
+  find the most recent "connect":"connected" timestamp and
+  sets LAST_ONLINE_LABEL + LAST_ONLINE_AGO variables:
+  • If currently connected: shows "🟢 Online since: Xh Ym ago"
+    (from first connected line in recent log)
+  • If disconnected: shows "🔴 Last online: Xd Yh ago"
+    (from last connected line found)
+  • If no history: shows "❓ No connection history"
+- Last online info added to: send_daily_report(),
+  send_notify_setup_success(), send_notify_restart_success()
 
 ## [1.4.1] - 2026-04-10
 ### Added
@@ -813,6 +828,130 @@ format_uptime() {
     echo "$ratio" | awk '{printf "%.1f", $1 * 100}'
 }
 
+# Format seconds elapsed into human-readable "X ago" string
+format_time_ago() {
+    local seconds="$1"
+    if [ -z "$seconds" ] || [ "$seconds" -lt 0 ] 2>/dev/null; then
+        echo "unknown"
+        return
+    fi
+
+    local days=$(( seconds / 86400 ))
+    local hours=$(( (seconds % 86400) / 3600 ))
+    local minutes=$(( (seconds % 3600) / 60 ))
+    local secs=$(( seconds % 60 ))
+
+    if [ "$days" -gt 0 ]; then
+        if [ "$hours" -gt 0 ] && [ "$minutes" -gt 0 ]; then
+            echo "${days}d ${hours}h ${minutes}m ago"
+        elif [ "$hours" -gt 0 ]; then
+            echo "${days}d ${hours}h ago"
+        else
+            echo "${days}d ago"
+        fi
+    elif [ "$hours" -gt 0 ]; then
+        if [ "$minutes" -gt 0 ]; then
+            echo "${hours}h ${minutes}m ago"
+        else
+            echo "${hours}h ago"
+        fi
+    elif [ "$minutes" -gt 0 ]; then
+        echo "${minutes}m ${secs}s ago"
+    else
+        echo "${secs}s ago"
+    fi
+}
+
+# Get last online timestamp info from ARO log.
+# Sets two variables in caller scope:
+#   LAST_ONLINE_LABEL  — emoji + label string
+#   LAST_ONLINE_AGO    — human readable time string
+get_last_online_info() {
+    LAST_ONLINE_LABEL="❓ No connection history"
+    LAST_ONLINE_AGO=""
+
+    if ! run_as_aro_user test -f "$LATEST_LOG_FILE" \
+            2>/dev/null; then
+        return
+    fi
+
+    local now
+    now=$(date +%s)
+
+    # Get all lines containing connect status from log
+    local log_content
+    log_content=$(run_as_aro_user tail -n 500 \
+                  "$LATEST_LOG_FILE" 2>/dev/null)
+
+    # Find timestamp of last "connected" line
+    local last_connected_line
+    last_connected_line=$(echo "$log_content" \
+        | grep '"connect":"connected"' \
+        | tail -1)
+
+    if [ -z "$last_connected_line" ]; then
+        LAST_ONLINE_LABEL="❓ Never connected in recent log"
+        LAST_ONLINE_AGO=""
+        return
+    fi
+
+    # Extract timestamp: format [2026-04-09 16:45:17.186]
+    local last_ts_str
+    last_ts_str=$(echo "$last_connected_line" \
+        | grep -oP '\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}' \
+        | tr -d '[')
+
+    local last_epoch=0
+    if [ -n "$last_ts_str" ]; then
+        last_epoch=$(date -d "$last_ts_str" +%s 2>/dev/null || echo 0)
+    fi
+
+    if [ "$last_epoch" -eq 0 ]; then
+        LAST_ONLINE_LABEL="❓ Could not parse timestamp"
+        LAST_ONLINE_AGO=""
+        return
+    fi
+
+    local elapsed=$(( now - last_epoch ))
+    local ago_str
+    ago_str=$(format_time_ago "$elapsed")
+
+    # Determine if currently connected or last seen
+    if [ "$CONNECT_STATUS" = "connected" ]; then
+        # Find FIRST connected line in the current continuous
+        # connected session (scan backwards from end)
+        local first_connected_line
+        first_connected_line=$(echo "$log_content" \
+            | grep '"connect":"connected"' \
+            | head -1)
+
+        local session_ts_str
+        session_ts_str=$(echo "$first_connected_line" \
+            | grep -oP '\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}' \
+            | tr -d '[')
+
+        local session_epoch=0
+        if [ -n "$session_ts_str" ]; then
+            session_epoch=$(date -d "$session_ts_str" \
+                            +%s 2>/dev/null || echo 0)
+        fi
+
+        if [ "$session_epoch" -gt 0 ]; then
+            local session_elapsed=$(( now - session_epoch ))
+            local session_ago
+            session_ago=$(format_time_ago "$session_elapsed")
+            LAST_ONLINE_LABEL="🟢 Online since"
+            LAST_ONLINE_AGO="$session_ago"
+        else
+            LAST_ONLINE_LABEL="🟢 Currently online"
+            LAST_ONLINE_AGO="$ago_str"
+        fi
+    else
+        LAST_ONLINE_LABEL="🔴 Last online"
+        LAST_ONLINE_AGO="$ago_str"
+    fi
+}
+
 send_telegram() {
     local msg="$1"
     curl -s -X POST \
@@ -853,6 +992,7 @@ send_notify_setup_success() {
     # Resolve latest log and parse node info
     LATEST_LOG_FILE=$(get_latest_aro_log)
     parse_node_info
+    get_last_online_info
 
     local f_today
     f_today=$(format_number "$REWARD_TODAY")
@@ -879,6 +1019,7 @@ send_notify_setup_success() {
 📧 Account: ${EMAIL}
 🌐 IP: ${PUBLIC_IP}
 🔗 Status: ${CONNECT_STATUS}
+${LAST_ONLINE_LABEL}: ${LAST_ONLINE_AGO}
 ──────────────────────
 💰 Reward today:     ${f_today} pts
 💰 Reward yesterday: ${f_yest} pts
@@ -915,6 +1056,7 @@ send_notify_crash() {
 send_notify_restart_success() {
     local startup_seconds="$1"
     parse_node_info
+    get_last_online_info
     
     local f_today=$(format_number "$REWARD_TODAY")
     local f_yest=$(format_number "$REWARD_YESTERDAY")
@@ -930,7 +1072,8 @@ send_notify_restart_success() {
 ⏱️ Startup time: ${startup_seconds}s
 💰 Reward today: ${f_today} pts
 💰 Reward yesterday: ${f_yest} pts
-📶 Uptime: ${f_uptime}%"
+📶 Uptime: ${f_uptime}%
+${LAST_ONLINE_LABEL}: ${LAST_ONLINE_AGO}"
 
     send_telegram "$msg"
 }
@@ -969,6 +1112,7 @@ send_notify_disconnect_alert() {
 
 send_daily_report() {
     parse_node_info
+    get_last_online_info
     
     local delta=$(awk "BEGIN {print $REWARD_TODAY - $REWARD_YESTERDAY}")
     local cmp=$(awk "BEGIN {if ($delta > 0) print 1; else if ($delta < 0) print -1; else print 0}")
@@ -995,7 +1139,8 @@ send_daily_report() {
 ${trend}
 📶 Uptime: ${f_uptime}%
 🔄 Restarts (24h): ${restart_count_24h}
-🟢 Status: ${CONNECT_STATUS}"
+🟢 Status: ${CONNECT_STATUS}
+${LAST_ONLINE_LABEL}: ${LAST_ONLINE_AGO}"
 
     send_telegram "$msg"
 }

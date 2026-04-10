@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.4.2] - 2026-04-10
+### Added
+- format_time_ago(): converts elapsed seconds to human-readable
+  string (e.g. "1d 2h 30m ago", "45m 12s ago")
+- get_last_online_info(): scans last 500 lines of ARO log to
+  find the most recent "connect":"connected" timestamp and
+  sets LAST_ONLINE_LABEL + LAST_ONLINE_AGO variables:
+  • If currently connected: shows "🟢 Online since: Xh Ym ago"
+    (from first connected line in recent log)
+  • If disconnected: shows "🔴 Last online: Xd Yh ago"
+    (from last connected line found)
+  • If no history: shows "❓ No connection history"
+- Last online info added to: send_daily_report(),
+  send_notify_setup_success(), send_notify_restart_success()
+
 ## [1.4.1] - 2026-04-10
 ### Added
 - send_notify_setup_success(): sends a Telegram notification
