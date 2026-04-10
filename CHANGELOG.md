@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.4.3] - 2026-04-10
+### Fixed
+- Duplicate watchdog instances: do_install() now only enables
+  the service (not starts it); do_setup() explicitly stops
+  any existing instance before starting fresh — eliminates
+  2-3 concurrent watchdog processes that caused duplicate
+  crash notifications and log spam
+- Increased service start wait from 2s to 3s for reliability
+
+### Added
+- wait_then_notify_restart(): runs in background after ARO
+  restart, polls log every 5s up to 120s waiting for
+  "connect":"connected" status before sending Telegram
+  notification — ensures reward/uptime data in notification
+  reflects actual connected state rather than stale values
+
 ## [1.4.2] - 2026-04-10
 ### Added
 - format_time_ago(): converts elapsed seconds to human-readable

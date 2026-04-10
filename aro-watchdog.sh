@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.4.2
+# ARO Node Watchdog Script v1.4.3
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.4.2"
+SCRIPT_VERSION="1.4.3"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -72,7 +72,7 @@ _require_root "$@"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.4.2                    ║
+║           ARO Node Watchdog v1.4.3                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -193,7 +193,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.4.2
+# Version: 1.4.3
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -233,7 +233,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.4.2
+# 🚀 ARO Node Watchdog v1.4.3
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -266,6 +266,22 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.4.3] - 2026-04-10
+### Fixed
+- Duplicate watchdog instances: do_install() now only enables
+  the service (not starts it); do_setup() explicitly stops
+  any existing instance before starting fresh — eliminates
+  2-3 concurrent watchdog processes that caused duplicate
+  crash notifications and log spam
+- Increased service start wait from 2s to 3s for reliability
+
+### Added
+- wait_then_notify_restart(): runs in background after ARO
+  restart, polls log every 5s up to 120s waiting for
+  "connect":"connected" status before sending Telegram
+  notification — ensures reward/uptime data in notification
+  reflects actual connected state rather than stale values
 
 ## [1.4.2] - 2026-04-10
 ### Added
@@ -1322,6 +1338,46 @@ restart_aro() {
     verify_startup
 }
 
+# Wait for ARO to reach "connected" state then send notification.
+# Runs in background so watchdog loop is not blocked.
+wait_then_notify_restart() {
+    local startup_seconds="$1"
+    local wait_max=120    # max seconds to wait for connected
+    local interval=5
+    local waited=0
+
+    # Poll until connected or timeout
+    while [ "$waited" -lt "$wait_max" ]; do
+        sleep "$interval"
+        waited=$((waited + interval))
+
+        # Re-read latest log
+        local candidate
+        candidate=$(get_latest_aro_log)
+        [ -n "$candidate" ] && LATEST_LOG_FILE="$candidate"
+
+        # Check connect status from log
+        local current_status=""
+        if run_as_aro_user test -f "$LATEST_LOG_FILE" \
+                2>/dev/null; then
+            current_status=$(run_as_aro_user tail -n 100 \
+                "$LATEST_LOG_FILE" 2>/dev/null \
+                | grep -oP '(?<="connect":")(connected|disconnected)' \
+                | tail -1)
+        fi
+
+        if [ "$current_status" = "connected" ]; then
+            log "Node connected after $((startup_seconds + waited))s total. Sending notification." "INFO"
+            send_notify_restart_success "$((startup_seconds + waited))"
+            return
+        fi
+    done
+
+    # Timeout — send notification with whatever data is available
+    log "Timed out waiting for connected status. Sending notification anyway." "WARN"
+    send_notify_restart_success "$((startup_seconds + waited))"
+}
+
 # ─────────────────────────────────────────────────────────────
 # MAIN WATCHDOG LOOP
 # ─────────────────────────────────────────────────────────────
@@ -1414,9 +1470,10 @@ watchdog_loop() {
 
         if [ "$result" = "success" ]; then
             log "ARO restarted successfully in ${elapsed}s"
-            send_notify_restart_success "$elapsed"
             last_stable_epoch=$(date +%s)
             LATEST_LOG_FILE=$(get_latest_aro_log)
+            # Send notification after node reaches connected state
+            wait_then_notify_restart "$elapsed" &
         else
             log "ARO restart failed (attempt ${retry_count})" "WARN"
         fi
@@ -1567,8 +1624,8 @@ Environment="DISPLAY=:20"
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload || true
-        systemctl enable --now aro-watchdog || true
-        echo "Installed as systemd system service."
+        systemctl enable aro-watchdog || true
+        echo "Installed as systemd system service (not started yet)."
     
     elif [ "$is_runit" -eq 1 ]; then
         echo "Detected runit init system."
@@ -1768,8 +1825,11 @@ do_setup() {
 
     # For systemd: use systemctl_user
     if [ -d /run/systemd/system ]; then
+        # Stop first to ensure no existing instance is running
+        systemctl_user stop aro-watchdog 2>/dev/null || true
+        sleep 1
         systemctl_user start aro-watchdog 2>/dev/null || true
-        sleep 2
+        sleep 3
         if systemctl_user is-active --quiet aro-watchdog 2>/dev/null; then
             echo "✔ Watchdog service is running (systemd)."
             _setup_watchdog_mode="systemd"
