@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.1] - 2026-04-10
+### Added
+- send_notify_setup_success(): sends a Telegram notification
+  at the end of do_setup() confirming watchdog is installed,
+  including: VPS hostname, ARO user, watchdog mode (systemd
+  or background), serial number, email, public IP, connection
+  status, today/yesterday rewards, and uptime ratio
+- Watchdog mode label distinguishes between "systemd system
+  service (auto-start on reboot)" and "background process"
+  so user knows immediately whether the service survives reboot
+
 ## [1.4.0] - 2026-04-10
 ### Changed
 - Switched from systemd USER service to SYSTEM service

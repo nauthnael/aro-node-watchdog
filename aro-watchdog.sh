@@ -1,10 +1,10 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# ARO Node Watchdog Script v1.4.0
+# ARO Node Watchdog Script v1.4.1
 # ─────────────────────────────────────────────────────────────
 
 # STEP 1: Define Constants
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="1.4.1"
 SHOW_FOOTER_ON_EXIT=0
 
 CURRENT_USER=$(whoami)
@@ -72,7 +72,7 @@ _require_root "$@"
 show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════╗
-║           ARO Node Watchdog v1.4.0                    ║
+║           ARO Node Watchdog v1.4.1                    ║
 ║       Automated crash recovery for ARO DePIN nodes    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Bird Connect: https://x.com/tuangg                   ║
@@ -193,7 +193,7 @@ create_default_config() {
 
     cat > "$CONFIG_FILE" << 'EOF'
 # ARO Node Watchdog — Configuration File
-# Version: 1.4.0
+# Version: 1.4.1
 # Edit this file then run: ./aro-watchdog.sh start
 
 # === Telegram ===
@@ -233,7 +233,7 @@ EOF
     fi
 
     cat > "$SCRIPT_DIR/README.md" << 'EOF'
-# 🚀 ARO Node Watchdog v1.4.0
+# 🚀 ARO Node Watchdog v1.4.1
 
 Công cụ giám sát chuyên nghiệp và tự động khôi phục dành cho **ARO DePIN Node** trên Linux VPS.
 
@@ -245,8 +245,7 @@ Sao chép và dán dòng lệnh bên dưới vào terminal của bạn (thay `TO
 curl -fsSL https://raw.githubusercontent.com/nauthnael/aro-node-watchdog/main/aro-watchdog.sh -o aro-watchdog.sh && chmod +x aro-watchdog.sh && sudo bash aro-watchdog.sh init --token "TOKEN_CUA_BAN" --chatid "ID_CUA_BAN" && sudo bash aro-watchdog.sh setup
 ```
 
-> **Note:** Nếu bạn dùng Ubuntu/Debian có systemd, hãy chạy lệnh này một lần để service watchdog tiếp tục chạy sau khi thoát SSH:
-> `loginctl enable-linger $(whoami)`
+> **Note:** Lệnh `setup` giờ đây tự động cấu hình tính năng auto-start luôn, nên Watchdog vẫn tự chạy sau khi khởi động khởi động lại VPS của bạn.
 
 ## 🛠 Tính năng
 - **Fix lỗi treo (Hung detection):** Tự động phát hiện khi log không cập nhật sau 10 phút.
@@ -267,6 +266,17 @@ EOF
 
     cat > "$SCRIPT_DIR/CHANGELOG.md" << 'EOF'
 # Changelog
+
+## [1.4.1] - 2026-04-10
+### Added
+- send_notify_setup_success(): sends a Telegram notification
+  at the end of do_setup() confirming watchdog is installed,
+  including: VPS hostname, ARO user, watchdog mode (systemd
+  or background), serial number, email, public IP, connection
+  status, today/yesterday rewards, and uptime ratio
+- Watchdog mode label distinguishes between "systemd system
+  service (auto-start on reboot)" and "background process"
+  so user knows immediately whether the service survives reboot
 
 ## [1.4.0] - 2026-04-10
 ### Changed
@@ -837,6 +847,48 @@ get_aro_log_snippet() {
 # ─────────────────────────────────────────────────────────────
 # NOTIFICATION TEMPLATES
 # ─────────────────────────────────────────────────────────────
+send_notify_setup_success() {
+    local watchdog_mode="$1"   # "systemd" or "background"
+
+    # Resolve latest log and parse node info
+    LATEST_LOG_FILE=$(get_latest_aro_log)
+    parse_node_info
+
+    local f_today
+    f_today=$(format_number "$REWARD_TODAY")
+    local f_yest
+    f_yest=$(format_number "$REWARD_YESTERDAY")
+    local f_uptime
+    f_uptime=$(format_uptime "$UPTIME")
+    local datetime
+    datetime=$(date "+%Y-%m-%d %H:%M:%S")
+
+    # Determine watchdog status label
+    local mode_label="background process"
+    [ "$watchdog_mode" = "systemd" ] && \
+        mode_label="systemd system service (auto-start on reboot)"
+
+    local msg="🚀 <b>[ARO WATCHDOG INSTALLED] ${HOSTNAME}</b>
+──────────────────────
+🖥️ VPS: ${HOSTNAME}
+👤 ARO User: ${EFFECTIVE_USER}
+⏰ Time: ${datetime}
+⚙️ Mode: ${mode_label}
+──────────────────────
+🔢 Serial: ${SERIAL}
+📧 Account: ${EMAIL}
+🌐 IP: ${PUBLIC_IP}
+🔗 Status: ${CONNECT_STATUS}
+──────────────────────
+💰 Reward today:     ${f_today} pts
+💰 Reward yesterday: ${f_yest} pts
+📶 Uptime: ${f_uptime}%
+──────────────────────
+✅ Watchdog is active and monitoring your node."
+
+    send_telegram "$msg"
+}
+
 send_notify_crash() {
     local reason="$1"
     local retry_num="$2"
@@ -1516,6 +1568,7 @@ enable_linger() {
 
 do_setup() {
     resolve_effective_user
+    local _setup_watchdog_mode="background"
 
     # Uninstall any existing watchdog installation first
     local already_installed=0
@@ -1574,6 +1627,7 @@ do_setup() {
         sleep 2
         if systemctl_user is-active --quiet aro-watchdog 2>/dev/null; then
             echo "✔ Watchdog service is running (systemd)."
+            _setup_watchdog_mode="systemd"
         else
             # Fallback: start as background process if service failed
             echo "⚠ systemd service did not start. Falling back to background mode."
@@ -1587,6 +1641,7 @@ do_setup() {
             local new_pid=$!
             echo "$new_pid" > "$PID_FILE"
             echo "✔ Watchdog started in background (PID: $new_pid)."
+            _setup_watchdog_mode="background"
         fi
     else
         # sysvinit / runit: fallback to background
@@ -1600,6 +1655,7 @@ do_setup() {
         local new_pid=$!
         echo "$new_pid" > "$PID_FILE"
         echo "✔ Watchdog started in background (PID: $new_pid)."
+        _setup_watchdog_mode="background"
     fi
     echo ""
 
@@ -1617,6 +1673,11 @@ do_setup() {
     echo ""
     echo "✔ Setup complete! Use './aro-watchdog.sh status' to check node info."
     echo "  Live log: ./aro-watchdog.sh log"
+
+    # Send Telegram notification with setup result and node info
+    echo "  Sending setup notification to Telegram..."
+    send_notify_setup_success "$_setup_watchdog_mode"
+    echo "✔ Telegram notification sent."
 }
 
 # Main routing logic
